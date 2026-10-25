@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name           ⚙ [General] Redirector
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
-// @description    Automatically redirects Reddit, Habr, and X to alternative frontends with toggleable menus.
+// @version        1.1.0
+// @description    Automatically redirects Reddit, Habr, X, and Wikipedia to alternative frontends with toggleable menus.
 // @author         Koresent
 // @license        GPL-3.0
 // @icon           https://www.svgrepo.com/show/183574/curved-arrow-share.svg
@@ -14,6 +14,7 @@
 // @match          *://*.reddit.com/*
 // @match          *://*.habr.com/*
 // @match          *://*.x.com/*
+// @match          *://*.wikipedia.org/wiki/*
 //
 // @run-at         document-start
 //
@@ -29,7 +30,8 @@
     const settings = {
         reddit: GM_getValue('redirect_reddit', true),
         habr: GM_getValue('redirect_habr', true),
-        x: GM_getValue('redirect_x', true)
+        x: GM_getValue('redirect_x', true),
+        wikipedia: GM_getValue('redirect_wikipedia', true)
     };
 
     // Toggle setting and reload page to apply changes
@@ -42,6 +44,7 @@
     GM_registerMenuCommand(`Reddit -> Redlib: ${settings.reddit ? '✅ ON' : '❌ OFF'}`, () => toggleSetting('reddit', 'redirect_reddit'));
     GM_registerMenuCommand(`Habr -> Geekr: ${settings.habr ? '✅ ON' : '❌ OFF'}`, () => toggleSetting('habr', 'redirect_habr'));
     GM_registerMenuCommand(`X -> Nitter: ${settings.x ? '✅ ON' : '❌ OFF'}`, () => toggleSetting('x', 'redirect_x'));
+    GM_registerMenuCommand(`Wikipedia -> Wikiwand: ${settings.wikipedia ? '✅ ON' : '❌ OFF'}`, () => toggleSetting('wikipedia', 'redirect_wikipedia'));
 
     const currentUrl = window.location.href;
     const hostname = window.location.hostname;
@@ -97,5 +100,27 @@
 
         window.location.replace(targetUrl);
         return;
+    }
+
+    // ==========================================
+    // 4. Wikipedia to Wikiwand
+    // ==========================================
+    if (settings.wikipedia && /(?:^|\.)wikipedia\.org$/.test(hostname)) {
+        // Skip redirect if returning from Wikiwand (oldformat parameter)
+        if (!/[?&]oldformat\b/i.test(window.location.search)) {
+            const hostMatch = hostname.match(/^([a-z0-9-]+?)(?:\.m)?\.wikipedia\.org$/i);
+            if (hostMatch && hostMatch[1].toLowerCase() !== 'www') {
+                const pathMatch = window.location.pathname.match(/^\/wiki\/([^?#]+)/);
+                if (pathMatch) {
+                    const lang = hostMatch[1].toLowerCase();
+                    const article = pathMatch[1];
+                    const hash = window.location.hash || '';
+                    const targetUrl = `https://www.wikiwand.com/${lang}/${article}${hash}`;
+
+                    window.location.replace(targetUrl);
+                    return;
+                }
+            }
+        }
     }
 })();
