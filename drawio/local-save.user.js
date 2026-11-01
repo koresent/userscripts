@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Draw.io] Local Save Bridge
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.2
+// @version        1.0.4
 // @description    Direct in-place local file saving and opening for Draw.io PWA without Save As dialogs
 // @author         Koresent
 // @license        GPL-3.0
@@ -13,6 +13,9 @@
 //
 // @match          *://app.diagrams.net/*
 // @match          *://embed.diagrams.net/*
+//
+// @connect        127.0.0.1
+// @connect        localhost
 //
 // @run-at         document-start
 //
@@ -33,6 +36,29 @@
     let loadedSessionId = null;
     let toastEl = null;
     let toastTimer = null;
+
+    function remoteLog(text) {
+        try {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${BRIDGE_BASE}/api/log`,
+                data: `[${location.hostname}] ${text}`
+            });
+        } catch (e) {}
+    }
+
+    remoteLog(`Userscript started (sessionId=${sessionId})`);
+
+    function safeExport(fn) {
+        if (typeof exportFunction === 'function') {
+            try {
+                return exportFunction(fn, win, { allowCrossOriginArguments: true });
+            } catch (e) {
+                remoteLog(`exportFunction error: ${e}`);
+            }
+        }
+        return fn;
+    }
 
     function showToast(text, isError = false) {
         try {
@@ -77,6 +103,8 @@
         if (!xml) return;
 
         showToast('Saving to disk...');
+        remoteLog(`doSave: saving ${xml.length} bytes for session ${sessionId}`);
+
         GM_xmlhttpRequest({
             method: 'POST',
             url: `${BRIDGE_BASE}/api/save?session=${encodeURIComponent(sessionId)}`,
@@ -97,24 +125,32 @@
                             ui.editor.setStatus(msg);
                         }
                     } catch (err) {
-                        console.error('[drawio-bridge] Post-save error:', err);
+                        remoteLog(`post-save UI update error: ${err}`);
                     }
                     showToast('Saved to disk');
+                    remoteLog('doSave: successfully saved');
                     if (typeof success === 'function') success();
                 } else {
                     showToast('Save failed!', true);
+                    remoteLog(`doSave: server returned status ${res.status}`);
                 }
             },
             onerror: function (err) {
                 showToast('Save error!', true);
-                console.error('[drawio-bridge] Network error on save:', err);
+                remoteLog(`doSave: network error ${err}`);
             }
         });
     }
 
     function loadFile(ui, session) {
-        if (!ui || !session) return;
+        ui = ui || activeUi;
+        if (!ui || !session) {
+            remoteLog(`loadFile called without ui (${!!ui}) or session (${session})`);
+            return;
+        }
         loadedSessionId = session;
+        remoteLog(`loadFile: requesting file for session ${session}`);
+
         GM_xmlhttpRequest({
             method: 'GET',
             url: `${BRIDGE_BASE}/api/file?session=${encodeURIComponent(session)}`,
@@ -125,24 +161,29 @@
                         if (typeof ui.hideDialog === 'function') ui.hideDialog();
                         document.title = (data.filename || 'Diagram') + ' - draw.io';
 
-                        ui.openLocalFile(data.xml, data.filename, false, null, null, true, () => {
-                            try {
-                                const file = ui.getCurrentFile();
-                                if (file) file.setModified(false);
-                                if (ui.editor) ui.editor.setModified(false);
-                                if (ui.editor && typeof ui.editor.setStatus === 'function') {
-                                    ui.editor.setStatus('Loaded from disk');
-                                }
-                            } catch (e) {}
-                            showToast(`Opened: ${data.filename}`);
-                        });
+                        const FileClass = win.LocalFile || (win.App && win.App.prototype ? win.LocalFile : null);
+                        if (FileClass) {
+                            const file = new FileClass(ui, data.xml, data.filename);
+                            ui.fileLoaded(file);
+                        } else {
+                            ui.openLocalFile(data.xml, data.filename, false, null, null, true);
+                        }
+
+                        if (ui.editor) ui.editor.setModified(false);
+                        if (ui.editor && typeof ui.editor.setStatus === 'function') {
+                            ui.editor.setStatus('Loaded from disk');
+                        }
+                        showToast(`Opened: ${data.filename}`);
+                        remoteLog(`loadFile: successfully loaded ${data.filename} (${(data.xml || '').length} bytes)`);
                     } catch (e) {
-                        console.error('[drawio-bridge] Parse file error:', e);
+                        remoteLog(`loadFile parse/render error: ${e}`);
                     }
+                } else {
+                    remoteLog(`loadFile: server returned ${res.status}`);
                 }
             },
             onerror: function (err) {
-                console.error('[drawio-bridge] Network error loading file:', err);
+                remoteLog(`loadFile network error: ${err}`);
             }
         });
     }
@@ -158,6 +199,7 @@
                         if (data && data.session) {
                             sessionId = data.session;
                             if (activeUi && loadedSessionId !== data.session) {
+                                remoteLog(`checkActiveSession: new session detected: ${data.session}`);
                                 loadFile(activeUi, data.session);
                             }
                         }
@@ -167,114 +209,39 @@
         });
     }
 
-    function patchSaveDialog() {
-        if (win.SaveDialog && !win.SaveDialog.__bridgePatched) {
-            const OrigSaveDialog = win.SaveDialog;
-            win.SaveDialog = function (ui, filename, fn, showSaveAs) {
-                if (sessionId && (activeUi || ui)) {
-                    doSave(ui || activeUi);
-                    return {
-                        container: document.createElement('div'),
-                        init: function () {
-                            if (ui && ui.hideDialog) ui.hideDialog();
-                        }
-                    };
-                }
-                return new OrigSaveDialog(ui, filename, fn, showSaveAs);
-            };
-            win.SaveDialog.__bridgePatched = true;
-        }
-    }
-
-    function patchPrototypes() {
-        if (win.App && win.App.prototype && !win.App.prototype.__bridgePatched) {
-            const origAppSaveFile = win.App.prototype.saveFile;
-            win.App.prototype.saveFile = function (forceDialog, success) {
-                if (sessionId) {
-                    doSave(this, success);
-                    return;
-                }
-                return origAppSaveFile.apply(this, arguments);
-            };
-
-            const origAppSave = win.App.prototype.save;
-            win.App.prototype.save = function (name, success) {
-                if (sessionId) {
-                    doSave(this, success);
-                    return;
-                }
-                return origAppSave.apply(this, arguments);
-            };
-            win.App.prototype.__bridgePatched = true;
-        }
-
-        if (win.EditorUi && win.EditorUi.prototype && !win.EditorUi.prototype.__bridgePatched) {
-            const origUiSaveFile = win.EditorUi.prototype.saveFile;
-            win.EditorUi.prototype.saveFile = function (forceDialog, success) {
-                if (sessionId) {
-                    doSave(this, success);
-                    return;
-                }
-                return origUiSaveFile.apply(this, arguments);
-            };
-
-            const origUiSave = win.EditorUi.prototype.save;
-            win.EditorUi.prototype.save = function (name, success) {
-                if (sessionId) {
-                    doSave(this, success);
-                    return;
-                }
-                return origUiSave.apply(this, arguments);
-            };
-            win.EditorUi.prototype.__bridgePatched = true;
-        }
-
-        if (win.LocalFile && win.LocalFile.prototype && !win.LocalFile.prototype.__bridgePatched) {
-            const origLocalSaveFile = win.LocalFile.prototype.saveFile;
-            win.LocalFile.prototype.saveFile = function (title, revision, success) {
-                if (sessionId) {
-                    doSave(this.ui || activeUi, success);
-                    return;
-                }
-                return origLocalSaveFile.apply(this, arguments);
-            };
-
-            const origLocalSave = win.LocalFile.prototype.save;
-            win.LocalFile.prototype.save = function (revision, success) {
-                if (sessionId) {
-                    doSave(this.ui || activeUi, success);
-                    return;
-                }
-                return origLocalSave.apply(this, arguments);
-            };
-            win.LocalFile.prototype.__bridgePatched = true;
-        }
-
-        patchSaveDialog();
-    }
-
     function hookUiInstance(ui) {
-        if (!ui) return;
+        if (!ui || ui.__bridgeInstanceHooked) return;
+        ui.__bridgeInstanceHooked = true;
         activeUi = ui;
+        remoteLog('hookUiInstance: UI instance attached');
+
+        const origSaveFile = ui.saveFile;
+        ui.saveFile = safeExport(function (forceDialog, success) {
+            if (sessionId) {
+                doSave(ui, success);
+                return;
+            }
+            origSaveFile.apply(this, arguments);
+        });
 
         if (ui.actions) {
             const saveAct = ui.actions.get('save');
             if (saveAct) {
-                saveAct.funct = function () {
+                saveAct.funct = safeExport(function () {
                     doSave(ui);
-                };
+                });
             }
             const saveAsAct = ui.actions.get('saveAs') || ui.actions.get('saveAs...');
             if (saveAsAct) {
-                saveAsAct.funct = function () {
+                saveAsAct.funct = safeExport(function () {
                     doSave(ui);
-                };
+                });
             }
         }
 
         if (ui.editor && ui.editor.graph && ui.editor.graph.model && win.mxEvent) {
             let debounce = null;
-            ui.editor.graph.model.addListener(win.mxEvent.CHANGE, () => {
+            const listener = safeExport(() => {
                 clearTimeout(debounce);
                 debounce = setTimeout(() => {
                     if (ui.editor && ui.editor.modified && sessionId) {
@@ -282,6 +249,7 @@
                     }
                 }, 1500);
             });
+            ui.editor.graph.model.addListener(win.mxEvent.CHANGE, listener);
         }
 
         if (sessionId && loadedSessionId !== sessionId) {
@@ -289,30 +257,47 @@
         }
     }
 
-    function hookAppLifecycle() {
-        patchPrototypes();
+    function registerPlugin() {
+        if (win.Draw && typeof win.Draw.loadPlugin === 'function') {
+            remoteLog('registerPlugin: Draw.loadPlugin found, registering callback');
+            win.Draw.loadPlugin(safeExport(function (ui) {
+                remoteLog('Draw.loadPlugin callback triggered!');
+                hookUiInstance(ui);
+            }));
+            return true;
+        }
+        return false;
+    }
 
-        if (win.App && win.App.prototype && !win.App.prototype.__initHooked) {
+    function hookAppClass() {
+        if (win.App && win.App.prototype && !win.App.prototype.__initBridgeHooked) {
+            remoteLog('hookAppClass: hooking App.prototype.init');
             const origInit = win.App.prototype.init;
-            win.App.prototype.init = function () {
-                origInit.apply(this, arguments);
-                patchPrototypes();
+            win.App.prototype.init = safeExport(function () {
+                remoteLog('App.prototype.init invoked!');
+                const res = origInit.apply(this, arguments);
                 hookUiInstance(this);
-            };
-            win.App.prototype.__initHooked = true;
+                return res;
+            });
+            win.App.prototype.__initBridgeHooked = true;
         }
+    }
 
-        if (win.App && win.App.main && !win.App.main.__hooked) {
-            const origMain = win.App.main;
-            win.App.main = function (callback, createUi) {
-                return origMain.call(this, function (ui) {
-                    patchPrototypes();
-                    hookUiInstance(ui);
-                    if (callback) callback(ui);
-                }, createUi);
-            };
-            win.App.main.__hooked = true;
-        }
+    if (win.SaveDialog && !win.SaveDialog.__bridgePatched) {
+        const OrigSaveDialog = win.SaveDialog;
+        win.SaveDialog = safeExport(function (ui, filename, fn, showSaveAs) {
+            if (sessionId && (activeUi || ui)) {
+                doSave(ui || activeUi);
+                return {
+                    container: document.createElement('div'),
+                    init: safeExport(function () {
+                        if (ui && ui.hideDialog) ui.hideDialog();
+                    })
+                };
+            }
+            return new OrigSaveDialog(ui, filename, fn, showSaveAs);
+        });
+        win.SaveDialog.__bridgePatched = true;
     }
 
     win.addEventListener('keydown', (e) => {
@@ -326,27 +311,21 @@
         }
     }, true);
 
-    win.addEventListener('focus', () => {
-        checkActiveSession();
-    });
-
+    win.addEventListener('focus', checkActiveSession);
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') {
-            checkActiveSession();
-        }
+        if (document.visibilityState === 'visible') checkActiveSession();
     });
 
     setInterval(checkActiveSession, 1500);
 
-    hookAppLifecycle();
+    hookAppClass();
+    if (!registerPlugin()) {
+        const pluginTimer = setInterval(() => {
+            hookAppClass();
+            if (registerPlugin()) clearInterval(pluginTimer);
+        }, 20);
+        setTimeout(() => clearInterval(pluginTimer), 10000);
+    }
 
-    const pollTimer = setInterval(() => {
-        hookAppLifecycle();
-        if (activeUi) {
-            hookUiInstance(activeUi);
-            clearInterval(pollTimer);
-        }
-    }, 25);
-
-    setTimeout(() => clearInterval(pollTimer), 10000);
+    checkActiveSession();
 })();
