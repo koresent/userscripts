@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Discord Rich Presence (PreMiD)
 // @namespace      github.com/koresent/userscripts
-// @version        2.1.0
+// @version        2.1.1
 // @description    Universal Discord Rich Presence for web services via PreMiD database and local RPC.
 // @author         Koresent
 // @license        GPL-3.0
@@ -38,7 +38,7 @@
     const err = (...args) => console.error(SCRIPT_NAME, ...args);
 
     const RESOLVER_API_URL = 'https://premid.app/api/activities';
-    const NEGATIVE_CACHE_TTL = 3 * 24 * 60 * 60 * 1000;
+    const NEGATIVE_CACHE_TTL = 10 * 1000;
     const RESOURCE_CACHE_TTL = 24 * 60 * 60 * 1000;
 
     const State = {
@@ -85,7 +85,7 @@
                 return metaTag.trim();
             }
 
-            const cacheKey = `srv_res_${hostname.toLowerCase()}`;
+            const cacheKey = `srv_res_v2_${hostname.toLowerCase()}`;
             const cached = GM_getValue(cacheKey, null);
             if (cached) {
                 if (cached.service) return cached.service;
@@ -126,17 +126,30 @@
                             const json = JSON.parse(res.responseText);
                             const activities = Array.isArray(json.data) ? json.data : [];
 
+                            // Pass 1: Exact domain match (e.g. music.yandex.ru -> Yandex Music)
                             for (const act of activities) {
                                 const actUrls = Array.isArray(act.url) ? act.url : [act.url];
                                 for (const u of actUrls) {
                                     if (!u || typeof u !== 'string') continue;
-                                    const clean = u.toLowerCase().trim();
-                                    if (hostname === clean || hostname.endsWith('.' + clean) || clean.endsWith('.' + hostname)) {
+                                    if (hostname === u.toLowerCase().trim()) {
                                         return resolve(act.service);
                                     }
                                 }
                             }
 
+                            // Pass 2: Subdomain / parent domain match (e.g. m.youtube.com -> YouTube)
+                            for (const act of activities) {
+                                const actUrls = Array.isArray(act.url) ? act.url : [act.url];
+                                for (const u of actUrls) {
+                                    if (!u || typeof u !== 'string') continue;
+                                    const clean = u.toLowerCase().trim();
+                                    if (hostname.endsWith('.' + clean) || clean.endsWith('.' + hostname)) {
+                                        return resolve(act.service);
+                                    }
+                                }
+                            }
+
+                            // Pass 3: Exact service name match
                             const exact = activities.find(a => a.service?.toLowerCase() === query.toLowerCase());
                             if (exact) return resolve(exact.service);
 
@@ -483,6 +496,12 @@
     function injectShadowUI() {
         if (document.getElementById('premid-rpc-host')) return;
 
+        const mountPoint = document.body || document.documentElement;
+        if (!mountPoint) {
+            window.addEventListener('DOMContentLoaded', () => injectShadowUI(), { once: true });
+            return;
+        }
+
         const host = document.createElement('div');
         host.id = 'premid-rpc-host';
         host.style.position = 'fixed';
@@ -734,7 +753,7 @@
 
         shadow.appendChild(style);
         shadow.appendChild(container);
-        document.body.appendChild(host);
+        mountPoint.appendChild(host);
 
         const trigger = shadow.querySelector('.pill-trigger');
         const modal = shadow.querySelector('.modal-backdrop');
