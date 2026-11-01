@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Discord Rich Presence (PreMiD)
 // @namespace      github.com/koresent/userscripts
-// @version        2.1.1
+// @version        2.1.2
 // @description    Universal Discord Rich Presence for web services via PreMiD database and local RPC.
 // @author         Koresent
 // @license        GPL-3.0
@@ -21,6 +21,7 @@
 // @connect        127.0.0.1
 // @connect        localhost
 //
+// @grant          unsafeWindow
 // @grant          GM_getValue
 // @grant          GM_setValue
 // @grant          GM_registerMenuCommand
@@ -221,9 +222,16 @@
     };
 
     const AdsumGateway = {
+        reconnectTimer: null,
+
         connect(clientId) {
-            if (State.ws && State.activeClientId === clientId) return;
-            if (State.ws) this.disconnect();
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+
+            if (State.ws && State.activeClientId === clientId && State.wsConnected) return;
+            if (State.ws) this.disconnect(false);
 
             State.activeClientId = clientId;
             const targetPort = Config.rpcPort;
@@ -251,7 +259,18 @@
             } catch (e) {
                 warn('WebSocket error:', e);
                 this.updateUIStatus();
+                this.scheduleReconnect();
             }
+        },
+
+        scheduleReconnect() {
+            if (this.reconnectTimer) return;
+            this.reconnectTimer = setTimeout(() => {
+                this.reconnectTimer = null;
+                if (!State.wsReady && State.activeClientId) {
+                    this.connect(State.activeClientId);
+                }
+            }, 3000);
         },
 
         onOpen() {
@@ -276,22 +295,31 @@
             State.wsReady = false;
             State.ws = null;
             this.updateUIStatus();
+            this.scheduleReconnect();
         },
 
-        onError() {
+        onError(e) {
+            warn('WebSocket error:', e);
             State.wsConnected = false;
             State.wsReady = false;
             this.updateUIStatus();
+            this.scheduleReconnect();
         },
 
-        disconnect() {
+        disconnect(sendClear = true) {
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
             if (State.ws) {
                 try {
-                    this.sendRaw({
-                        cmd: 'SET_ACTIVITY',
-                        args: { pid: State.pid, activity: null },
-                        nonce: 'clear-tab-disconnect'
-                    });
+                    if (sendClear) {
+                        this.sendRaw({
+                            cmd: 'SET_ACTIVITY',
+                            args: { pid: State.pid, activity: null },
+                            nonce: 'clear-tab-disconnect'
+                        });
+                    }
                     if (State.ws.close) State.ws.close();
                 } catch (e) {}
                 State.ws = null;
@@ -362,9 +390,11 @@
     };
 
     function installPreMiDRuntime() {
-        window.ActivityType = { Playing: 0, Streaming: 1, Listening: 2, Watching: 3, Competing: 5 };
-        window.StatusDisplayType = { Name: 0, State: 1, Details: 2 };
-        window.Assets = {
+        const root = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+
+        root.ActivityType = window.ActivityType = { Playing: 0, Streaming: 1, Listening: 2, Watching: 3, Competing: 5 };
+        root.StatusDisplayType = window.StatusDisplayType = { Name: 0, State: 1, Details: 2 };
+        root.Assets = window.Assets = {
             Play: 'https://cdn.rcd.gg/PreMiD/resources/play.png',
             Pause: 'https://cdn.rcd.gg/PreMiD/resources/pause.png',
             Stop: 'https://cdn.rcd.gg/PreMiD/resources/stop.png',
@@ -373,19 +403,21 @@
             Live: 'https://cdn.rcd.gg/PreMiD/resources/live.png'
         };
 
-        window.getTimestampsFromMedia = function (media) {
+        const getTimestampsFromMedia = function (media) {
             if (!media || isNaN(media.duration) || media.duration <= 0) return [0, 0];
             const start = Date.now() / 1000 - media.currentTime;
             const end = start + media.duration;
             return [Math.floor(start), Math.floor(end)];
         };
+        root.getTimestampsFromMedia = window.getTimestampsFromMedia = getTimestampsFromMedia;
 
-        window.timestampFromFormat = function (str) {
+        const timestampFromFormat = function (str) {
             if (!str || typeof str !== 'string') return 0;
             const parts = str.split(':').map(Number);
             while (parts.length < 3) parts.unshift(0);
             return parts[0] * 3600 + parts[1] * 60 + parts[2];
         };
+        root.timestampFromFormat = window.timestampFromFormat = timestampFromFormat;
 
         class PreMiDPresence {
             constructor(options = {}) {
@@ -467,7 +499,7 @@
             error(...args) { err(`[${State.serviceName}]`, ...args); }
         }
 
-        window.Presence = PreMiDPresence;
+        root.Presence = window.Presence = PreMiDPresence;
     }
 
     function loadSettings(serviceName, metadata) {
@@ -977,8 +1009,21 @@
             const presenceCode = await ResourceLoader.fetchPresence(serviceName);
             log(`Loaded presence.js (${presenceCode.length} bytes). Executing runtime...`);
 
-            const runner = new Function(presenceCode);
-            runner();
+            const runner = new Function(
+                'Presence',
+                'ActivityType',
+                'Assets',
+                'getTimestampsFromMedia',
+                'timestampFromFormat',
+                presenceCode
+            );
+            runner(
+                window.Presence,
+                window.ActivityType,
+                window.Assets,
+                window.getTimestampsFromMedia,
+                window.timestampFromFormat
+            );
 
             State.updateInterval = setInterval(() => {
                 if (State.presenceInstance && State.presenceInstance.updateListeners) {
