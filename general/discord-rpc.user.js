@@ -403,7 +403,7 @@
             } else if (State.wsReady) {
                 pill.className = 'status-pill online';
                 pill.innerHTML = '<span class="dot"></span> Discord RPC Connected';
-            } else if (State.wsConnected) {
+            } else if (State.wsConnected || (State.ws && State.ws.readyState === 0)) {
                 pill.className = 'status-pill connecting';
                 pill.innerHTML = '<span class="dot"></span> Connecting...';
             } else {
