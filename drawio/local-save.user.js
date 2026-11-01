@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Draw.io] Local Save Bridge
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.4
+// @version        1.1.0
 // @description    Direct in-place local file saving and opening for Draw.io PWA without Save As dialogs
 // @author         Koresent
 // @license        GPL-3.0
@@ -20,20 +20,15 @@
 // @run-at         document-start
 //
 // @grant          GM_xmlhttpRequest
-// @grant          unsafeWindow
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     const BRIDGE_BASE = 'http://127.0.0.1:48240';
-
-    const urlParams = new URLSearchParams(win.location.search);
-    let sessionId = urlParams.get('bridge_session');
-
-    let activeUi = null;
-    let loadedSessionId = null;
+    let currentSessionId = null;
+    let currentFilename = null;
+    let lastSyncedXml = null;
     let toastEl = null;
     let toastTimer = null;
 
@@ -47,18 +42,7 @@
         } catch (e) {}
     }
 
-    remoteLog(`Userscript started (sessionId=${sessionId})`);
-
-    function safeExport(fn) {
-        if (typeof exportFunction === 'function') {
-            try {
-                return exportFunction(fn, win, { allowCrossOriginArguments: true });
-            } catch (e) {
-                remoteLog(`exportFunction error: ${e}`);
-            }
-        }
-        return fn;
-    }
+    remoteLog('v1.1.0 (IndexedDB Native) started');
 
     function showToast(text, isError = false) {
         try {
@@ -96,236 +80,163 @@
         } catch (e) {}
     }
 
-    function doSave(ui, success) {
-        ui = ui || activeUi;
-        if (!ui || !sessionId) return;
-        const xml = ui.getFileData(true);
-        if (!xml) return;
-
-        showToast('Saving to disk...');
-        remoteLog(`doSave: saving ${xml.length} bytes for session ${sessionId}`);
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: `${BRIDGE_BASE}/api/save?session=${encodeURIComponent(sessionId)}`,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ xml: xml }),
-            onload: function (res) {
-                if (res.status === 200) {
-                    try {
-                        const file = ui.getCurrentFile();
-                        if (file) {
-                            file.setModified(false);
-                            if (typeof file.contentChanged === 'function') file.contentChanged();
-                        }
-                        if (ui.editor) ui.editor.setModified(false);
-                        if (typeof ui.clearStatus === 'function') ui.clearStatus();
-                        if (ui.editor && typeof ui.editor.setStatus === 'function') {
-                            const msg = win.mxResources ? win.mxResources.get('allChangesSaved') : 'All changes saved to disk';
-                            ui.editor.setStatus(msg);
-                        }
-                    } catch (err) {
-                        remoteLog(`post-save UI update error: ${err}`);
-                    }
-                    showToast('Saved to disk');
-                    remoteLog('doSave: successfully saved');
-                    if (typeof success === 'function') success();
-                } else {
-                    showToast('Save failed!', true);
-                    remoteLog(`doSave: server returned status ${res.status}`);
+    function writeToIdb(filename, xml) {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open('database', 2);
+            req.onupgradeneeded = () => {
+                try {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains('objects')) db.createObjectStore('objects', { keyPath: 'key' });
+                    if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'title' });
+                    if (!db.objectStoreNames.contains('filesInfo')) db.createObjectStore('filesInfo', { keyPath: 'title' });
+                } catch (e) {
+                    reject(e);
                 }
-            },
-            onerror: function (err) {
-                showToast('Save error!', true);
-                remoteLog(`doSave: network error ${err}`);
+            };
+            req.onsuccess = () => {
+                try {
+                    const db = req.result;
+                    const tx = db.transaction(['files', 'filesInfo'], 'readwrite');
+                    tx.objectStore('files').put({ title: filename, data: xml });
+                    tx.objectStore('filesInfo').put({
+                        title: filename,
+                        size: xml.length,
+                        lastModified: Date.now(),
+                        type: 'F'
+                    });
+                    tx.oncomplete = () => resolve(true);
+                    tx.onerror = () => reject(tx.error);
+                } catch (e) {
+                    reject(e);
+                }
+            };
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    function readFromIdb(filename) {
+        return new Promise((resolve) => {
+            try {
+                const req = indexedDB.open('database', 2);
+                req.onsuccess = () => {
+                    try {
+                        const db = req.result;
+                        if (!db.objectStoreNames.contains('files')) return resolve(null);
+                        const tx = db.transaction(['files'], 'readonly');
+                        const getReq = tx.objectStore('files').get(filename);
+                        getReq.onsuccess = () => resolve(getReq.result ? getReq.result.data : null);
+                        getReq.onerror = () => resolve(null);
+                    } catch (e) {
+                        resolve(null);
+                    }
+                };
+                req.onerror = () => resolve(null);
+            } catch (e) {
+                resolve(null);
             }
         });
     }
 
-    function loadFile(ui, session) {
-        ui = ui || activeUi;
-        if (!ui || !session) {
-            remoteLog(`loadFile called without ui (${!!ui}) or session (${session})`);
-            return;
-        }
-        loadedSessionId = session;
-        remoteLog(`loadFile: requesting file for session ${session}`);
+    async function syncToDisk() {
+        if (!currentFilename || !currentSessionId) return;
+        try {
+            const xml = await readFromIdb(currentFilename);
+            if (!xml || xml === lastSyncedXml) return;
 
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${BRIDGE_BASE}/api/file?session=${encodeURIComponent(session)}`,
-            onload: function (res) {
-                if (res.status === 200) {
-                    try {
-                        const data = JSON.parse(res.responseText);
-                        if (typeof ui.hideDialog === 'function') ui.hideDialog();
-                        document.title = (data.filename || 'Diagram') + ' - draw.io';
+            showToast('Saving to disk...');
+            remoteLog(`syncToDisk: saving ${xml.length} bytes to ${currentFilename}`);
 
-                        const FileClass = win.LocalFile || (win.App && win.App.prototype ? win.LocalFile : null);
-                        if (FileClass) {
-                            const file = new FileClass(ui, data.xml, data.filename);
-                            ui.fileLoaded(file);
-                        } else {
-                            ui.openLocalFile(data.xml, data.filename, false, null, null, true);
-                        }
-
-                        if (ui.editor) ui.editor.setModified(false);
-                        if (ui.editor && typeof ui.editor.setStatus === 'function') {
-                            ui.editor.setStatus('Loaded from disk');
-                        }
-                        showToast(`Opened: ${data.filename}`);
-                        remoteLog(`loadFile: successfully loaded ${data.filename} (${(data.xml || '').length} bytes)`);
-                    } catch (e) {
-                        remoteLog(`loadFile parse/render error: ${e}`);
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${BRIDGE_BASE}/api/save?session=${encodeURIComponent(currentSessionId)}`,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({ xml: xml }),
+                onload: function (res) {
+                    if (res.status === 200) {
+                        lastSyncedXml = xml;
+                        showToast('Saved to disk');
+                        remoteLog(`syncToDisk: successfully saved ${currentFilename}`);
+                    } else {
+                        showToast('Save failed!', true);
+                        remoteLog(`syncToDisk error: status ${res.status}`);
                     }
-                } else {
-                    remoteLog(`loadFile: server returned ${res.status}`);
+                },
+                onerror: function (err) {
+                    showToast('Save error!', true);
+                    remoteLog(`syncToDisk network error: ${err}`);
                 }
-            },
-            onerror: function (err) {
-                remoteLog(`loadFile network error: ${err}`);
-            }
-        });
+            });
+        } catch (e) {
+            remoteLog(`syncToDisk exception: ${e.message}`);
+        }
     }
 
     function checkActiveSession() {
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${BRIDGE_BASE}/api/active_session`,
-            onload: function (res) {
-                if (res.status === 200) {
-                    try {
-                        const data = JSON.parse(res.responseText);
-                        if (data && data.session) {
-                            sessionId = data.session;
-                            if (activeUi && loadedSessionId !== data.session) {
-                                remoteLog(`checkActiveSession: new session detected: ${data.session}`);
-                                loadFile(activeUi, data.session);
+        try {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${BRIDGE_BASE}/api/active_session`,
+                onload: function (res) {
+                    if (res.status === 200) {
+                        try {
+                            const data = JSON.parse(res.responseText);
+                            if (data && data.session && data.session !== currentSessionId) {
+                                const newSession = data.session;
+                                remoteLog(`checkActiveSession: new session detected ${newSession}`);
+
+                                GM_xmlhttpRequest({
+                                    method: 'GET',
+                                    url: `${BRIDGE_BASE}/api/file?session=${encodeURIComponent(newSession)}`,
+                                    onload: async function (fres) {
+                                        if (fres.status === 200) {
+                                            try {
+                                                const fileData = JSON.parse(fres.responseText);
+                                                currentSessionId = newSession;
+                                                currentFilename = fileData.filename;
+                                                lastSyncedXml = fileData.xml;
+
+                                                remoteLog(`checkActiveSession: writing ${fileData.filename} to IndexedDB`);
+                                                await writeToIdb(fileData.filename, fileData.xml);
+
+                                                window.location.hash = '#L' + encodeURIComponent(fileData.filename);
+                                                showToast(`Opened: ${fileData.filename}`);
+                                                remoteLog(`checkActiveSession: hash updated to #L${fileData.filename}`);
+                                            } catch (e) {
+                                                remoteLog(`checkActiveSession IDB write error: ${e.message}`);
+                                            }
+                                        }
+                                    }
+                                });
                             }
-                        }
-                    } catch (e) {}
-                }
-            }
-        });
-    }
-
-    function hookUiInstance(ui) {
-        if (!ui || ui.__bridgeInstanceHooked) return;
-        ui.__bridgeInstanceHooked = true;
-        activeUi = ui;
-        remoteLog('hookUiInstance: UI instance attached');
-
-        const origSaveFile = ui.saveFile;
-        ui.saveFile = safeExport(function (forceDialog, success) {
-            if (sessionId) {
-                doSave(ui, success);
-                return;
-            }
-            origSaveFile.apply(this, arguments);
-        });
-
-        if (ui.actions) {
-            const saveAct = ui.actions.get('save');
-            if (saveAct) {
-                saveAct.funct = safeExport(function () {
-                    doSave(ui);
-                });
-            }
-            const saveAsAct = ui.actions.get('saveAs') || ui.actions.get('saveAs...');
-            if (saveAsAct) {
-                saveAsAct.funct = safeExport(function () {
-                    doSave(ui);
-                });
-            }
-        }
-
-        if (ui.editor && ui.editor.graph && ui.editor.graph.model && win.mxEvent) {
-            let debounce = null;
-            const listener = safeExport(() => {
-                clearTimeout(debounce);
-                debounce = setTimeout(() => {
-                    if (ui.editor && ui.editor.modified && sessionId) {
-                        doSave(ui);
+                        } catch (e) {}
                     }
-                }, 1500);
+                }
             });
-            ui.editor.graph.model.addListener(win.mxEvent.CHANGE, listener);
-        }
-
-        if (sessionId && loadedSessionId !== sessionId) {
-            loadFile(ui, sessionId);
+        } catch (e) {
+            remoteLog(`checkActiveSession error: ${e.message}`);
         }
     }
 
-    function registerPlugin() {
-        if (win.Draw && typeof win.Draw.loadPlugin === 'function') {
-            remoteLog('registerPlugin: Draw.loadPlugin found, registering callback');
-            win.Draw.loadPlugin(safeExport(function (ui) {
-                remoteLog('Draw.loadPlugin callback triggered!');
-                hookUiInstance(ui);
-            }));
-            return true;
-        }
-        return false;
-    }
+    window.addEventListener('focus', () => {
+        checkActiveSession();
+        syncToDisk();
+    });
 
-    function hookAppClass() {
-        if (win.App && win.App.prototype && !win.App.prototype.__initBridgeHooked) {
-            remoteLog('hookAppClass: hooking App.prototype.init');
-            const origInit = win.App.prototype.init;
-            win.App.prototype.init = safeExport(function () {
-                remoteLog('App.prototype.init invoked!');
-                const res = origInit.apply(this, arguments);
-                hookUiInstance(this);
-                return res;
-            });
-            win.App.prototype.__initBridgeHooked = true;
-        }
-    }
-
-    if (win.SaveDialog && !win.SaveDialog.__bridgePatched) {
-        const OrigSaveDialog = win.SaveDialog;
-        win.SaveDialog = safeExport(function (ui, filename, fn, showSaveAs) {
-            if (sessionId && (activeUi || ui)) {
-                doSave(ui || activeUi);
-                return {
-                    container: document.createElement('div'),
-                    init: safeExport(function () {
-                        if (ui && ui.hideDialog) ui.hideDialog();
-                    })
-                };
-            }
-            return new OrigSaveDialog(ui, filename, fn, showSaveAs);
-        });
-        win.SaveDialog.__bridgePatched = true;
-    }
-
-    win.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === 's') {
-            if (sessionId) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                doSave(activeUi);
-            }
-        }
-    }, true);
-
-    win.addEventListener('focus', checkActiveSession);
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') checkActiveSession();
+        if (document.visibilityState === 'visible') {
+            checkActiveSession();
+            syncToDisk();
+        }
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === 's') {
+            setTimeout(syncToDisk, 350);
+        }
     });
 
     setInterval(checkActiveSession, 1500);
-
-    hookAppClass();
-    if (!registerPlugin()) {
-        const pluginTimer = setInterval(() => {
-            hookAppClass();
-            if (registerPlugin()) clearInterval(pluginTimer);
-        }, 20);
-        setTimeout(() => clearInterval(pluginTimer), 10000);
-    }
+    setInterval(syncToDisk, 2000);
 
     checkActiveSession();
 })();
