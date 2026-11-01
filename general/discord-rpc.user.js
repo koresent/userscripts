@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Discord Rich Presence (PreMiD)
 // @namespace      github.com/koresent/userscripts
-// @version        2.1.2
+// @version        2.2.0
 // @description    Universal Discord Rich Presence for web services via PreMiD database and local RPC.
 // @author         Koresent
 // @license        GPL-3.0
@@ -45,7 +45,6 @@
     const State = {
         serviceName: null,
         metadata: null,
-        presenceScript: null,
         presenceInstance: null,
         activeClientId: null,
         updateInterval: null,
@@ -66,6 +65,17 @@
         customButtonLabel: '',
         customClientId: '',
     };
+
+    function isServiceEnabled(serviceName) {
+        if (!serviceName) return false;
+        const defaultEnabled = GM_getValue('global_default_enabled', false);
+        return GM_getValue(`service_enabled_${serviceName}`, defaultEnabled);
+    }
+
+    function setServiceEnabled(serviceName, enabled) {
+        if (!serviceName) return;
+        GM_setValue(`service_enabled_${serviceName}`, Boolean(enabled));
+    }
 
     const ServiceResolver = {
         extractSlug(hostname) {
@@ -221,7 +231,7 @@
         }
     };
 
-    const AdsumGateway = {
+    const RpcGateway = {
         reconnectTimer: null,
 
         connect(clientId) {
@@ -230,13 +240,17 @@
                 this.reconnectTimer = null;
             }
 
+            if (!isServiceEnabled(State.serviceName)) {
+                return;
+            }
+
             if (State.ws && State.activeClientId === clientId && State.wsConnected) return;
             if (State.ws) this.disconnect(false);
 
             State.activeClientId = clientId;
             const targetPort = Config.rpcPort;
             const wsUrl = `ws://127.0.0.1:${targetPort}/?v=1&encoding=json&client_id=${clientId}`;
-            log(`Connecting to Adsum RPC [ID: ${clientId}]...`);
+            log(`Connecting to Discord RPC [ID: ${clientId}]...`);
 
             try {
                 if (typeof GM_webSocket !== 'undefined') {
@@ -265,16 +279,18 @@
 
         scheduleReconnect() {
             if (this.reconnectTimer) return;
+            if (!isServiceEnabled(State.serviceName)) return;
+
             this.reconnectTimer = setTimeout(() => {
                 this.reconnectTimer = null;
-                if (!State.wsReady && State.activeClientId) {
+                if (!State.wsReady && State.activeClientId && isServiceEnabled(State.serviceName)) {
                     this.connect(State.activeClientId);
                 }
             }, 3000);
         },
 
         onOpen() {
-            log('WebSocket socket opened. Awaiting READY handshake...');
+            log('WebSocket opened. Awaiting Discord RPC READY handshake...');
             State.wsConnected = true;
             this.updateUIStatus();
         },
@@ -283,7 +299,7 @@
             try {
                 const msg = JSON.parse(event.data);
                 if (msg.cmd === 'DISPATCH' && msg.evt === 'READY') {
-                    log('Adsum handshake successful (READY).');
+                    log('Discord RPC handshake successful (READY).');
                     State.wsReady = true;
                     this.updateUIStatus();
                 }
@@ -295,7 +311,9 @@
             State.wsReady = false;
             State.ws = null;
             this.updateUIStatus();
-            this.scheduleReconnect();
+            if (isServiceEnabled(State.serviceName)) {
+                this.scheduleReconnect();
+            }
         },
 
         onError(e) {
@@ -303,7 +321,9 @@
             State.wsConnected = false;
             State.wsReady = false;
             this.updateUIStatus();
-            this.scheduleReconnect();
+            if (isServiceEnabled(State.serviceName)) {
+                this.scheduleReconnect();
+            }
         },
 
         disconnect(sendClear = true) {
@@ -326,6 +346,7 @@
             }
             State.wsConnected = false;
             State.wsReady = false;
+            State.lastPayloadHash = null;
             this.updateUIStatus();
         },
 
@@ -342,7 +363,7 @@
         },
 
         sendActivity(rawActivity) {
-            if (!State.wsReady) return;
+            if (!State.wsReady || !isServiceEnabled(State.serviceName)) return;
 
             if (rawActivity && Config.enableButtons) {
                 const currentUrl = window.location.href;
@@ -374,18 +395,90 @@
         updateUIStatus() {
             if (!State.uiShadow) return;
             const pill = State.uiShadow.querySelector('.status-pill');
-            if (pill) {
-                if (State.wsReady) {
-                    pill.className = 'status-pill online';
-                    pill.innerHTML = '<span class="dot"></span> Adsum Connected';
-                } else if (State.wsConnected) {
-                    pill.className = 'status-pill connecting';
-                    pill.innerHTML = '<span class="dot"></span> Connecting...';
-                } else {
-                    pill.className = 'status-pill offline';
-                    pill.innerHTML = '<span class="dot"></span> Adsum Offline (6463)';
+            if (!pill) return;
+
+            if (!isServiceEnabled(State.serviceName)) {
+                pill.className = 'status-pill disabled';
+                pill.innerHTML = '<span class="dot"></span> Presence Disabled';
+            } else if (State.wsReady) {
+                pill.className = 'status-pill online';
+                pill.innerHTML = '<span class="dot"></span> Discord RPC Connected';
+            } else if (State.wsConnected) {
+                pill.className = 'status-pill connecting';
+                pill.innerHTML = '<span class="dot"></span> Connecting...';
+            } else {
+                pill.className = 'status-pill offline';
+                pill.innerHTML = '<span class="dot"></span> Discord RPC Offline (6463)';
+            }
+        }
+    };
+
+    const PresenceRuntime = {
+        started: false,
+
+        async start() {
+            if (this.started) return;
+            this.started = true;
+            log(`Enabling presence runtime for ${State.serviceName}...`);
+
+            if (!State.presenceInstance) {
+                try {
+                    const presenceCode = await ResourceLoader.fetchPresence(State.serviceName);
+                    log(`Executing presence script for ${State.serviceName} (${presenceCode.length} bytes)...`);
+
+                    const runner = new Function(
+                        'Presence',
+                        'ActivityType',
+                        'Assets',
+                        'getTimestampsFromMedia',
+                        'timestampFromFormat',
+                        presenceCode
+                    );
+                    runner(
+                        window.Presence,
+                        window.ActivityType,
+                        window.Assets,
+                        window.getTimestampsFromMedia,
+                        window.timestampFromFormat
+                    );
+                } catch (e) {
+                    err(`Failed to initialize presence for ${State.serviceName}:`, e);
+                }
+            } else {
+                RpcGateway.connect(State.activeClientId || Config.customClientId || '463097721130188830');
+            }
+
+            if (!State.updateInterval) {
+                State.updateInterval = setInterval(() => {
+                    if (this.started && State.presenceInstance && State.presenceInstance.updateListeners) {
+                        for (const listener of State.presenceInstance.updateListeners) {
+                            try { listener(); } catch (e) {}
+                        }
+                    }
+                }, Config.updateFrequency);
+            }
+
+            if (State.presenceInstance && State.presenceInstance.updateListeners) {
+                for (const listener of State.presenceInstance.updateListeners) {
+                    try { listener(); } catch (e) {}
                 }
             }
+
+            RpcGateway.updateUIStatus();
+        },
+
+        stop() {
+            if (!this.started) return;
+            this.started = false;
+            log(`Disabling presence runtime for ${State.serviceName}...`);
+
+            if (State.updateInterval) {
+                clearInterval(State.updateInterval);
+                State.updateInterval = null;
+            }
+
+            RpcGateway.disconnect(true);
+            RpcGateway.updateUIStatus();
         }
     };
 
@@ -425,8 +518,11 @@
                 this.options = options;
                 this.updateListeners = [];
                 State.presenceInstance = this;
+                State.activeClientId = this.clientId;
 
-                AdsumGateway.connect(this.clientId);
+                if (isServiceEnabled(State.serviceName)) {
+                    RpcGateway.connect(this.clientId);
+                }
             }
 
             on(event, callback) {
@@ -436,8 +532,10 @@
             }
 
             setActivity(data, playback = true) {
+                if (!isServiceEnabled(State.serviceName)) return;
+
                 if (!data || Object.keys(data).length === 0) {
-                    AdsumGateway.sendActivity(null);
+                    RpcGateway.sendActivity(null);
                     return;
                 }
 
@@ -464,11 +562,11 @@
                     activity.buttons = data.buttons;
                 }
 
-                AdsumGateway.sendActivity(activity);
+                RpcGateway.sendActivity(activity);
             }
 
             clearActivity() {
-                AdsumGateway.sendActivity(null);
+                RpcGateway.sendActivity(null);
             }
 
             getActivity() {
@@ -525,6 +623,37 @@
         GM_setValue(`settings_${serviceName}`, State.settings);
     }
 
+    function openUI() {
+        if (!State.uiShadow) {
+            injectShadowUI();
+        }
+        if (!State.uiShadow) return;
+
+        State.uiOpen = true;
+        renderSettingsForm(State.uiShadow);
+        const modal = State.uiShadow.querySelector('.modal-backdrop');
+        if (modal) {
+            modal.classList.add('open');
+            RpcGateway.updateUIStatus();
+            const closeBtn = State.uiShadow.querySelector('.close-btn');
+            if (closeBtn) closeBtn.focus();
+        }
+    }
+
+    function closeUI() {
+        State.uiOpen = false;
+        if (!State.uiShadow) return;
+        const modal = State.uiShadow.querySelector('.modal-backdrop');
+        if (modal) {
+            modal.classList.remove('open');
+        }
+    }
+
+    function toggleUI() {
+        if (State.uiOpen) closeUI();
+        else openUI();
+    }
+
     function injectShadowUI() {
         if (document.getElementById('premid-rpc-host')) return;
 
@@ -537,9 +666,10 @@
         const host = document.createElement('div');
         host.id = 'premid-rpc-host';
         host.style.position = 'fixed';
-        host.style.bottom = '20px';
-        host.style.right = '20px';
+        host.style.bottom = '0';
+        host.style.right = '0';
         host.style.zIndex = '2147483647';
+        host.style.pointerEvents = 'none';
         host.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
         const shadow = host.attachShadow({ mode: 'closed' });
@@ -548,51 +678,18 @@
         const style = document.createElement('style');
         style.textContent = `
             * { box-sizing: border-box; margin: 0; padding: 0; }
-            .pill-trigger {
-                background: #232428;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                color: #f2f3f5;
-                padding: 0 14px;
-                min-height: 44px;
-                border-radius: 12px;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                cursor: pointer;
-                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-                transition: background-color 0.15s ease, border-color 0.15s ease;
-                user-select: none;
-            }
-            .pill-trigger:hover {
-                background: #2b2d31;
-                border-color: rgba(255, 255, 255, 0.25);
-            }
-            .pill-trigger:focus-visible {
-                outline: 2px solid #5865f2;
-                outline-offset: 2px;
-            }
-            .pill-icon {
-                width: 20px;
-                height: 20px;
-                border-radius: 4px;
-                object-fit: contain;
-            }
-            .pill-text {
-                font-size: 13px;
-                font-weight: 600;
-                letter-spacing: -0.2px;
-            }
             .modal-backdrop {
                 display: none;
+                pointer-events: auto;
                 position: fixed;
-                bottom: 56px;
-                right: 0;
+                bottom: 24px;
+                right: 24px;
                 width: 360px;
-                max-height: 80vh;
+                max-height: calc(100vh - 48px);
                 background: #1e1f22;
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 12px;
-                box-shadow: 0 8px 16px rgba(0, 0, 0, 0.45);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
                 overflow: hidden;
                 flex-direction: column;
                 animation: slideUp 0.18s ease-out;
@@ -603,7 +700,7 @@
                 to { opacity: 1; transform: translateY(0); }
             }
             @media (prefers-reduced-motion: reduce) {
-                .modal-backdrop, .pill-trigger, .slider, .btn {
+                .modal-backdrop, .slider, .btn {
                     animation: none !important;
                     transition: none !important;
                 }
@@ -630,6 +727,7 @@
             .status-pill.online { background: #1b3d2b; color: #47d17e; }
             .status-pill.connecting { background: #3d3319; color: #ffc83b; }
             .status-pill.offline { background: #421d20; color: #ff6b72; }
+            .status-pill.disabled { background: #2b2d31; color: #949ba4; border: 1px solid rgba(255, 255, 255, 0.08); }
             .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
             .close-btn {
                 background: none;
@@ -637,10 +735,10 @@
                 color: #b5bac1;
                 font-size: 20px;
                 cursor: pointer;
-                width: 44px;
-                height: 44px;
-                min-width: 44px;
-                min-height: 44px;
+                width: 36px;
+                height: 36px;
+                min-width: 36px;
+                min-height: 36px;
                 border-radius: 8px;
                 display: inline-flex;
                 align-items: center;
@@ -689,6 +787,7 @@
                 display: inline-block;
                 width: 44px;
                 height: 24px;
+                flex-shrink: 0;
             }
             .switch input { opacity: 0; width: 0; height: 0; }
             .slider {
@@ -738,8 +837,8 @@
                 align-items: center;
             }
             .btn {
-                padding: 10px 16px;
-                min-height: 44px;
+                padding: 8px 16px;
+                min-height: 38px;
                 font-size: 13px;
                 font-weight: 600;
                 border-radius: 8px;
@@ -762,16 +861,11 @@
 
         const container = document.createElement('div');
         container.innerHTML = `
-            <button type="button" class="pill-trigger" aria-haspopup="dialog" aria-expanded="false" aria-label="Open Discord Presence Settings">
-                <img class="pill-icon" src="${State.metadata?.logo || 'https://cdn.rcd.gg/PreMiD/resources/play.png'}" alt="" aria-hidden="true">
-                <span class="pill-text">${State.serviceName || 'Rich Presence'}</span>
-            </button>
-
             <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title-heading">
                 <div class="modal-header">
                     <div class="header-info">
-                        <span class="header-title" id="modal-title-heading">${State.serviceName || 'Activity Settings'}</span>
-                        <div class="status-pill offline"><span class="dot"></span> Adsum</div>
+                        <span class="header-title" id="modal-title-heading">${State.serviceName || 'Rich Presence'}</span>
+                        <div class="status-pill offline"><span class="dot"></span> Discord RPC</div>
                     </div>
                     <button type="button" class="close-btn" aria-label="Close settings">&times;</button>
                 </div>
@@ -787,33 +881,9 @@
         shadow.appendChild(container);
         mountPoint.appendChild(host);
 
-        const trigger = shadow.querySelector('.pill-trigger');
-        const modal = shadow.querySelector('.modal-backdrop');
         const closeBtn = shadow.querySelector('.close-btn');
         const saveCloseBtn = shadow.querySelector('#save-close-btn');
 
-        const openUI = () => {
-            State.uiOpen = true;
-            trigger.setAttribute('aria-expanded', 'true');
-            renderSettingsForm(shadow);
-            modal.classList.add('open');
-            AdsumGateway.updateUIStatus();
-            closeBtn.focus();
-        };
-
-        const closeUI = () => {
-            State.uiOpen = false;
-            trigger.setAttribute('aria-expanded', 'false');
-            modal.classList.remove('open');
-            trigger.focus();
-        };
-
-        const toggleUI = () => {
-            if (State.uiOpen) closeUI();
-            else openUI();
-        };
-
-        trigger.addEventListener('click', toggleUI);
         closeBtn.addEventListener('click', closeUI);
         saveCloseBtn.addEventListener('click', closeUI);
 
@@ -826,12 +896,56 @@
                 closeUI();
             }
         });
+
+        window.addEventListener('pointerdown', (e) => {
+            if (!State.uiOpen) return;
+            if (host && !e.composedPath().includes(host)) {
+                closeUI();
+            }
+        });
     }
 
     function renderSettingsForm(shadow) {
         const container = shadow.querySelector('#modal-settings-container');
         if (!container) return;
         container.innerHTML = '';
+
+        // Master switch: Enable/Disable Rich Presence for this service
+        if (State.serviceName) {
+            const masterSec = document.createElement('div');
+            masterSec.className = 'setting-item';
+            masterSec.style.borderBottom = '1px solid rgba(255, 255, 255, 0.08)';
+            masterSec.style.paddingBottom = '14px';
+            masterSec.style.marginBottom = '4px';
+
+            const enabled = isServiceEnabled(State.serviceName);
+            masterSec.innerHTML = `
+                <div class="setting-row">
+                    <div>
+                        <label class="setting-label" for="master-presence-toggle" style="font-weight: 600; color: #fff;">Enable Presence</label>
+                        <div style="font-size: 11px; color: #949ba4; margin-top: 2px;">Share activity on Discord for ${State.serviceName}</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="master-presence-toggle" ${enabled ? 'checked' : ''}>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            `;
+
+            const masterToggle = masterSec.querySelector('#master-presence-toggle');
+            masterToggle.addEventListener('change', () => {
+                const next = masterToggle.checked;
+                setServiceEnabled(State.serviceName, next);
+                if (next) {
+                    PresenceRuntime.start();
+                } else {
+                    PresenceRuntime.stop();
+                }
+                registerMenuCommands();
+            });
+
+            container.appendChild(masterSec);
+        }
 
         if (State.metadata && Array.isArray(State.metadata.settings) && State.metadata.settings.length > 0) {
             const sec1 = document.createElement('div');
@@ -938,8 +1052,8 @@
         clientIdInput.addEventListener('change', () => {
             Config.customClientId = clientIdInput.value.trim();
             GM_setValue(`client_id_${State.serviceName}`, Config.customClientId);
-            if (Config.customClientId) {
-                AdsumGateway.connect(Config.customClientId);
+            if (Config.customClientId && isServiceEnabled(State.serviceName)) {
+                RpcGateway.connect(Config.customClientId);
             }
         });
 
@@ -963,7 +1077,62 @@
         });
     }
 
+    let activeMenuCommands = [];
+
+    function registerMenuCommands() {
+        if (typeof GM_registerMenuCommand === 'undefined') return;
+
+        if (typeof GM_unregisterMenuCommand !== 'undefined') {
+            for (const cmdId of activeMenuCommands) {
+                try { GM_unregisterMenuCommand(cmdId); } catch (e) {}
+            }
+        }
+        activeMenuCommands = [];
+
+        const defaultEnabled = GM_getValue('global_default_enabled', false);
+
+        if (State.serviceName) {
+            const enabled = isServiceEnabled(State.serviceName);
+            const toggleLabel = enabled
+                ? `● ${State.serviceName}: Enabled (Click to Disable)`
+                : `○ ${State.serviceName}: Disabled (Click to Enable)`;
+
+            const toggleId = GM_registerMenuCommand(toggleLabel, () => {
+                const next = !enabled;
+                setServiceEnabled(State.serviceName, next);
+                if (next) {
+                    PresenceRuntime.start();
+                } else {
+                    PresenceRuntime.stop();
+                }
+                registerMenuCommands();
+                if (State.uiShadow) {
+                    renderSettingsForm(State.uiShadow);
+                }
+            });
+            if (toggleId !== undefined) activeMenuCommands.push(toggleId);
+
+            const configId = GM_registerMenuCommand(`⚙ Configure ${State.serviceName} Presence`, () => {
+                openUI();
+            });
+            if (configId !== undefined) activeMenuCommands.push(configId);
+        }
+
+        const defaultLabel = defaultEnabled
+            ? '★ Default Mode: Enabled (Click to set Disabled)'
+            : '☆ Default Mode: Disabled (Click to set Enabled)';
+
+        const defaultId = GM_registerMenuCommand(defaultLabel, () => {
+            const next = !defaultEnabled;
+            GM_setValue('global_default_enabled', next);
+            registerMenuCommands();
+        });
+        if (defaultId !== undefined) activeMenuCommands.push(defaultId);
+    }
+
     async function bootstrap() {
+        registerMenuCommands();
+
         const currentUrl = window.location.href;
         const currentHostname = window.location.hostname;
 
@@ -985,60 +1154,22 @@
             warn(`Could not load metadata for ${serviceName}:`, e);
         }
 
+        registerMenuCommands();
+
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => injectShadowUI());
         } else {
             injectShadowUI();
         }
 
-        if (typeof GM_registerMenuCommand !== 'undefined') {
-            GM_registerMenuCommand(`Configure Presence (${serviceName})`, () => {
-                if (State.uiShadow) {
-                    const modal = State.uiShadow.querySelector('.modal-backdrop');
-                    if (modal) {
-                        State.uiOpen = true;
-                        renderSettingsForm(State.uiShadow);
-                        modal.classList.add('open');
-                        AdsumGateway.updateUIStatus();
-                    }
-                }
-            });
-        }
-
-        try {
-            const presenceCode = await ResourceLoader.fetchPresence(serviceName);
-            log(`Loaded presence.js (${presenceCode.length} bytes). Executing runtime...`);
-
-            const runner = new Function(
-                'Presence',
-                'ActivityType',
-                'Assets',
-                'getTimestampsFromMedia',
-                'timestampFromFormat',
-                presenceCode
-            );
-            runner(
-                window.Presence,
-                window.ActivityType,
-                window.Assets,
-                window.getTimestampsFromMedia,
-                window.timestampFromFormat
-            );
-
-            State.updateInterval = setInterval(() => {
-                if (State.presenceInstance && State.presenceInstance.updateListeners) {
-                    for (const listener of State.presenceInstance.updateListeners) {
-                        try { listener(); } catch (e) {}
-                    }
-                }
-            }, Config.updateFrequency);
-
-        } catch (e) {
-            err(`Failed to initialize presence for ${serviceName}:`, e);
+        if (isServiceEnabled(serviceName)) {
+            await PresenceRuntime.start();
+        } else {
+            log(`Presence for ${serviceName} is disabled by default.`);
         }
 
         window.addEventListener('beforeunload', () => {
-            AdsumGateway.disconnect();
+            RpcGateway.disconnect();
         });
     }
 
