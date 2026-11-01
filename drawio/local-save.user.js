@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Draw.io] Local Save Bridge
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.0
+// @version        1.1.1
 // @description    Direct in-place local file saving and opening for Draw.io PWA without Save As dialogs
 // @author         Koresent
 // @license        GPL-3.0
@@ -42,7 +42,7 @@
         } catch (e) {}
     }
 
-    remoteLog('v1.1.0 (IndexedDB Native) started');
+    remoteLog('v1.1.1 (IndexedDB Native) started');
 
     function showToast(text, isError = false) {
         try {
@@ -198,7 +198,17 @@
                                                 remoteLog(`checkActiveSession: writing ${fileData.filename} to IndexedDB`);
                                                 await writeToIdb(fileData.filename, fileData.xml);
 
-                                                window.location.hash = '#L' + encodeURIComponent(fileData.filename);
+                                                const targetHash = '#L' + encodeURIComponent(fileData.filename);
+                                                if (window.location.hash.startsWith(targetHash)) {
+                                                    try {
+                                                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                                                    } catch (err) {
+                                                        window.location.hash = '';
+                                                        setTimeout(() => { window.location.hash = targetHash; }, 50);
+                                                    }
+                                                } else {
+                                                    window.location.hash = targetHash;
+                                                }
                                                 showToast(`Opened: ${fileData.filename}`);
                                                 remoteLog(`checkActiveSession: hash updated to #L${fileData.filename}`);
                                             } catch (e) {
