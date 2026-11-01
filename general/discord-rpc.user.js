@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Discord Rich Presence (PreMiD)
 // @namespace      github.com/koresent/userscripts
-// @version        2.2.0
+// @version        2.2.1
 // @description    Universal Discord Rich Presence for web services via PreMiD database and local RPC.
 // @author         Koresent
 // @license        GPL-3.0
@@ -12,6 +12,7 @@
 // @downloadURL    https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/general/discord-rpc.user.js
 //
 // @match          *://*/*
+// @noframes
 //
 // @run-at         document-start
 //
@@ -32,6 +33,10 @@
 
 (function () {
     'use strict';
+
+    if (window.self !== window.top) {
+        return;
+    }
 
     const SCRIPT_NAME = '[Discord RPC Engine]';
     const log = (...args) => console.log(SCRIPT_NAME, ...args);
@@ -60,6 +65,7 @@
 
     const Config = {
         rpcPort: 6463,
+        rpcHosts: ['127.0.0.1', 'localhost'],
         updateFrequency: 2500,
         enableButtons: true,
         customButtonLabel: '',
@@ -233,6 +239,7 @@
 
     const RpcGateway = {
         reconnectTimer: null,
+        hostIndex: 0,
 
         connect(clientId) {
             if (this.reconnectTimer) {
@@ -249,8 +256,9 @@
 
             State.activeClientId = clientId;
             const targetPort = Config.rpcPort;
-            const wsUrl = `ws://127.0.0.1:${targetPort}/?v=1&encoding=json&client_id=${clientId}`;
-            log(`Connecting to Discord RPC [ID: ${clientId}]...`);
+            const targetHost = Config.rpcHosts[this.hostIndex % Config.rpcHosts.length];
+            const wsUrl = `ws://${targetHost}:${targetPort}/?v=1&encoding=json&client_id=${clientId}`;
+            log(`Connecting to Discord RPC via ${targetHost} [ID: ${clientId}]...`);
 
             try {
                 if (typeof GM_webSocket !== 'undefined') {
@@ -272,6 +280,7 @@
                 }
             } catch (e) {
                 warn('WebSocket error:', e);
+                this.hostIndex++;
                 this.updateUIStatus();
                 this.scheduleReconnect();
             }
@@ -307,6 +316,9 @@
         },
 
         onClose() {
+            if (!State.wsReady) {
+                this.hostIndex++;
+            }
             State.wsConnected = false;
             State.wsReady = false;
             State.ws = null;
@@ -318,6 +330,9 @@
 
         onError(e) {
             warn('WebSocket error:', e);
+            if (!State.wsReady) {
+                this.hostIndex++;
+            }
             State.wsConnected = false;
             State.wsReady = false;
             this.updateUIStatus();
@@ -403,7 +418,7 @@
             } else if (State.wsReady) {
                 pill.className = 'status-pill online';
                 pill.innerHTML = '<span class="dot"></span> Discord RPC Connected';
-            } else if (State.wsConnected || (State.ws && State.ws.readyState === 0)) {
+            } else if (State.wsConnected || (State.ws && State.ws.readyState === 0) || PresenceRuntime.started) {
                 pill.className = 'status-pill connecting';
                 pill.innerHTML = '<span class="dot"></span> Connecting...';
             } else {
@@ -420,6 +435,8 @@
             if (this.started) return;
             this.started = true;
             log(`Enabling presence runtime for ${State.serviceName}...`);
+
+            RpcGateway.updateUIStatus();
 
             if (!State.presenceInstance) {
                 try {
@@ -443,6 +460,9 @@
                     );
                 } catch (e) {
                     err(`Failed to initialize presence for ${State.serviceName}:`, e);
+                    this.started = false;
+                    RpcGateway.updateUIStatus();
+                    return;
                 }
             } else {
                 RpcGateway.connect(State.activeClientId || Config.customClientId || '463097721130188830');
@@ -623,11 +643,39 @@
         GM_setValue(`settings_${serviceName}`, State.settings);
     }
 
+    function ensureBody(callback) {
+        if (document.body) {
+            callback(document.body);
+            return;
+        }
+
+        const observer = new MutationObserver(() => {
+            if (document.body) {
+                observer.disconnect();
+                callback(document.body);
+            }
+        });
+
+        if (document.documentElement) {
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            observer.disconnect();
+            if (document.body) callback(document.body);
+        }, { once: true });
+    }
+
     function openUI() {
         if (!State.uiShadow) {
             injectShadowUI();
         }
         if (!State.uiShadow) return;
+
+        const host = document.getElementById('premid-rpc-host');
+        if (host && document.body && host.parentNode !== document.body) {
+            document.body.appendChild(host);
+        }
 
         State.uiOpen = true;
         renderSettingsForm(State.uiShadow);
@@ -655,255 +703,261 @@
     }
 
     function injectShadowUI() {
-        if (document.getElementById('premid-rpc-host')) return;
+        let host = document.getElementById('premid-rpc-host');
+        if (host && State.uiShadow) return;
 
-        const mountPoint = document.body || document.documentElement;
-        if (!mountPoint) {
-            window.addEventListener('DOMContentLoaded', () => injectShadowUI(), { once: true });
-            return;
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'premid-rpc-host';
+            host.style.position = 'fixed';
+            host.style.bottom = '0';
+            host.style.right = '0';
+            host.style.zIndex = '2147483647';
+            host.style.pointerEvents = 'none';
+            host.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+            const shadow = host.attachShadow({ mode: 'closed' });
+            State.uiShadow = shadow;
+
+            const style = document.createElement('style');
+            style.textContent = `
+                * { box-sizing: border-box; margin: 0; padding: 0; }
+                .modal-backdrop {
+                    display: none;
+                    pointer-events: auto;
+                    position: fixed;
+                    bottom: 24px;
+                    right: 24px;
+                    width: 360px;
+                    max-height: calc(100vh - 48px);
+                    background: #1e1f22;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 12px;
+                    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+                    overflow: hidden;
+                    flex-direction: column;
+                    animation: slideUp 0.18s ease-out;
+                }
+                .modal-backdrop.open { display: flex; }
+                @keyframes slideUp {
+                    from { opacity: 0; transform: translateY(8px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    .modal-backdrop, .slider, .btn {
+                        animation: none !important;
+                        transition: none !important;
+                    }
+                }
+                .modal-header {
+                    padding: 14px 16px;
+                    background: #2b2d31;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                }
+                .header-info { display: flex; align-items: center; gap: 10px; }
+                .header-title { font-size: 14px; font-weight: 700; color: #fff; }
+                .status-pill {
+                    font-size: 11px;
+                    padding: 3px 8px;
+                    border-radius: 6px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    font-weight: 600;
+                }
+                .status-pill.online { background: #1b3d2b; color: #47d17e; }
+                .status-pill.connecting { background: #3d3319; color: #ffc83b; }
+                .status-pill.offline { background: #421d20; color: #ff6b72; }
+                .status-pill.disabled { background: #2b2d31; color: #949ba4; border: 1px solid rgba(255, 255, 255, 0.08); }
+                .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+                .close-btn {
+                    background: none;
+                    border: none;
+                    color: #b5bac1;
+                    font-size: 20px;
+                    cursor: pointer;
+                    width: 36px;
+                    height: 36px;
+                    min-width: 36px;
+                    min-height: 36px;
+                    border-radius: 8px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+                .close-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+                .close-btn:focus-visible {
+                    outline: 2px solid #5865f2;
+                    outline-offset: -2px;
+                }
+                .modal-body {
+                    padding: 16px;
+                    overflow-y: auto;
+                    max-height: 60vh;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 16px;
+                }
+                .section-title {
+                    font-size: 11px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    color: #949ba4;
+                    margin-bottom: 8px;
+                }
+                .setting-item {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 6px;
+                }
+                .setting-row {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    min-height: 36px;
+                }
+                .setting-label {
+                    font-size: 13px;
+                    color: #dbdee1;
+                    font-weight: 500;
+                    cursor: pointer;
+                }
+                .switch {
+                    position: relative;
+                    display: inline-block;
+                    width: 44px;
+                    height: 24px;
+                    flex-shrink: 0;
+                }
+                .switch input { opacity: 0; width: 0; height: 0; }
+                .slider {
+                    position: absolute; cursor: pointer;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background-color: #4e5058;
+                    transition: background-color 0.15s ease;
+                    border-radius: 12px;
+                }
+                .slider:before {
+                    position: absolute; content: "";
+                    height: 18px; width: 18px;
+                    left: 3px; bottom: 3px;
+                    background-color: white;
+                    transition: transform 0.15s ease;
+                    border-radius: 50%;
+                }
+                .switch input:focus-visible + .slider {
+                    outline: 2px solid #5865f2;
+                    outline-offset: 2px;
+                }
+                input:checked + .slider { background-color: #5865f2; }
+                input:checked + .slider:before { transform: translateX(20px); }
+                .styled-select, .styled-input {
+                    width: 100%;
+                    background: #111214;
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 8px;
+                    padding: 10px 12px;
+                    color: #f2f3f5;
+                    font-size: 13px;
+                    outline: none;
+                    transition: border-color 0.15s ease;
+                }
+                .styled-select:focus-visible, .styled-input:focus-visible {
+                    border-color: #5865f2;
+                    outline: 2px solid #5865f2;
+                    outline-offset: 1px;
+                }
+                .modal-footer {
+                    padding: 12px 16px;
+                    background: #2b2d31;
+                    border-top: 1px solid rgba(255, 255, 255, 0.08);
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 10px;
+                    align-items: center;
+                }
+                .btn {
+                    padding: 8px 16px;
+                    min-height: 38px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    border: none;
+                    transition: background-color 0.15s ease;
+                }
+                .btn-primary { background: #5865f2; color: #fff; }
+                .btn-primary:hover { background: #4752c4; }
+                .btn-primary:focus-visible {
+                    outline: 2px solid #fff;
+                    outline-offset: 2px;
+                }
+                .hotkey-hint {
+                    font-size: 11px;
+                    color: #949ba4;
+                    margin-right: auto;
+                }
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = `
+                <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title-heading">
+                    <div class="modal-header">
+                        <div class="header-info">
+                            <span class="header-title" id="modal-title-heading">${State.serviceName || 'Rich Presence'}</span>
+                            <div class="status-pill offline"><span class="dot"></span> Discord RPC</div>
+                        </div>
+                        <button type="button" class="close-btn" aria-label="Close settings">&times;</button>
+                    </div>
+                    <div class="modal-body" id="modal-settings-container"></div>
+                    <div class="modal-footer">
+                        <span class="hotkey-hint">Alt + P / Esc</span>
+                        <button type="button" class="btn btn-primary" id="save-close-btn">Done</button>
+                    </div>
+                </div>
+            `;
+
+            shadow.appendChild(style);
+            shadow.appendChild(container);
+
+            const closeBtn = shadow.querySelector('.close-btn');
+            const saveCloseBtn = shadow.querySelector('#save-close-btn');
+
+            closeBtn.addEventListener('click', closeUI);
+            saveCloseBtn.addEventListener('click', closeUI);
         }
 
-        const host = document.createElement('div');
-        host.id = 'premid-rpc-host';
-        host.style.position = 'fixed';
-        host.style.bottom = '0';
-        host.style.right = '0';
-        host.style.zIndex = '2147483647';
-        host.style.pointerEvents = 'none';
-        host.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
-
-        const shadow = host.attachShadow({ mode: 'closed' });
-        State.uiShadow = shadow;
-
-        const style = document.createElement('style');
-        style.textContent = `
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            .modal-backdrop {
-                display: none;
-                pointer-events: auto;
-                position: fixed;
-                bottom: 24px;
-                right: 24px;
-                width: 360px;
-                max-height: calc(100vh - 48px);
-                background: #1e1f22;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 12px;
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-                overflow: hidden;
-                flex-direction: column;
-                animation: slideUp 0.18s ease-out;
-            }
-            .modal-backdrop.open { display: flex; }
-            @keyframes slideUp {
-                from { opacity: 0; transform: translateY(8px); }
-                to { opacity: 1; transform: translateY(0); }
-            }
-            @media (prefers-reduced-motion: reduce) {
-                .modal-backdrop, .slider, .btn {
-                    animation: none !important;
-                    transition: none !important;
-                }
-            }
-            .modal-header {
-                padding: 14px 16px;
-                background: #2b2d31;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-            }
-            .header-info { display: flex; align-items: center; gap: 10px; }
-            .header-title { font-size: 14px; font-weight: 700; color: #fff; }
-            .status-pill {
-                font-size: 11px;
-                padding: 3px 8px;
-                border-radius: 6px;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                font-weight: 600;
-            }
-            .status-pill.online { background: #1b3d2b; color: #47d17e; }
-            .status-pill.connecting { background: #3d3319; color: #ffc83b; }
-            .status-pill.offline { background: #421d20; color: #ff6b72; }
-            .status-pill.disabled { background: #2b2d31; color: #949ba4; border: 1px solid rgba(255, 255, 255, 0.08); }
-            .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-            .close-btn {
-                background: none;
-                border: none;
-                color: #b5bac1;
-                font-size: 20px;
-                cursor: pointer;
-                width: 36px;
-                height: 36px;
-                min-width: 36px;
-                min-height: 36px;
-                border-radius: 8px;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .close-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
-            .close-btn:focus-visible {
-                outline: 2px solid #5865f2;
-                outline-offset: -2px;
-            }
-            .modal-body {
-                padding: 16px;
-                overflow-y: auto;
-                max-height: 60vh;
-                display: flex;
-                flex-direction: column;
-                gap: 16px;
-            }
-            .section-title {
-                font-size: 11px;
-                font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                color: #949ba4;
-                margin-bottom: 8px;
-            }
-            .setting-item {
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-            }
-            .setting-row {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                min-height: 36px;
-            }
-            .setting-label {
-                font-size: 13px;
-                color: #dbdee1;
-                font-weight: 500;
-                cursor: pointer;
-            }
-            .switch {
-                position: relative;
-                display: inline-block;
-                width: 44px;
-                height: 24px;
-                flex-shrink: 0;
-            }
-            .switch input { opacity: 0; width: 0; height: 0; }
-            .slider {
-                position: absolute; cursor: pointer;
-                top: 0; left: 0; right: 0; bottom: 0;
-                background-color: #4e5058;
-                transition: background-color 0.15s ease;
-                border-radius: 12px;
-            }
-            .slider:before {
-                position: absolute; content: "";
-                height: 18px; width: 18px;
-                left: 3px; bottom: 3px;
-                background-color: white;
-                transition: transform 0.15s ease;
-                border-radius: 50%;
-            }
-            .switch input:focus-visible + .slider {
-                outline: 2px solid #5865f2;
-                outline-offset: 2px;
-            }
-            input:checked + .slider { background-color: #5865f2; }
-            input:checked + .slider:before { transform: translateX(20px); }
-            .styled-select, .styled-input {
-                width: 100%;
-                background: #111214;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 8px;
-                padding: 10px 12px;
-                color: #f2f3f5;
-                font-size: 13px;
-                outline: none;
-                transition: border-color 0.15s ease;
-            }
-            .styled-select:focus-visible, .styled-input:focus-visible {
-                border-color: #5865f2;
-                outline: 2px solid #5865f2;
-                outline-offset: 1px;
-            }
-            .modal-footer {
-                padding: 12px 16px;
-                background: #2b2d31;
-                border-top: 1px solid rgba(255, 255, 255, 0.08);
-                display: flex;
-                justify-content: flex-end;
-                gap: 10px;
-                align-items: center;
-            }
-            .btn {
-                padding: 8px 16px;
-                min-height: 38px;
-                font-size: 13px;
-                font-weight: 600;
-                border-radius: 8px;
-                cursor: pointer;
-                border: none;
-                transition: background-color 0.15s ease;
-            }
-            .btn-primary { background: #5865f2; color: #fff; }
-            .btn-primary:hover { background: #4752c4; }
-            .btn-primary:focus-visible {
-                outline: 2px solid #fff;
-                outline-offset: 2px;
-            }
-            .hotkey-hint {
-                font-size: 11px;
-                color: #949ba4;
-                margin-right: auto;
-            }
-        `;
-
-        const container = document.createElement('div');
-        container.innerHTML = `
-            <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title-heading">
-                <div class="modal-header">
-                    <div class="header-info">
-                        <span class="header-title" id="modal-title-heading">${State.serviceName || 'Rich Presence'}</span>
-                        <div class="status-pill offline"><span class="dot"></span> Discord RPC</div>
-                    </div>
-                    <button type="button" class="close-btn" aria-label="Close settings">&times;</button>
-                </div>
-                <div class="modal-body" id="modal-settings-container"></div>
-                <div class="modal-footer">
-                    <span class="hotkey-hint">Alt + P / Esc</span>
-                    <button type="button" class="btn btn-primary" id="save-close-btn">Done</button>
-                </div>
-            </div>
-        `;
-
-        shadow.appendChild(style);
-        shadow.appendChild(container);
-        mountPoint.appendChild(host);
-
-        const closeBtn = shadow.querySelector('.close-btn');
-        const saveCloseBtn = shadow.querySelector('#save-close-btn');
-
-        closeBtn.addEventListener('click', closeUI);
-        saveCloseBtn.addEventListener('click', closeUI);
-
-        window.addEventListener('keydown', (e) => {
-            if (e.altKey && (e.code === 'KeyP' || e.key === 'p' || e.key === 'P')) {
-                e.preventDefault();
-                toggleUI();
-            } else if (e.key === 'Escape' && State.uiOpen) {
-                e.preventDefault();
-                closeUI();
-            }
-        });
-
-        window.addEventListener('pointerdown', (e) => {
-            if (!State.uiOpen) return;
-            if (host && !e.composedPath().includes(host)) {
-                closeUI();
+        ensureBody((body) => {
+            if (host.parentNode !== body) {
+                body.appendChild(host);
             }
         });
     }
+
+    // Capture global keyboard shortcuts so full-page SPAs like YouTube cannot swallow Alt+P
+    window.addEventListener('keydown', (e) => {
+        if (e.altKey && (e.code === 'KeyP' || e.key === 'p' || e.key === 'P')) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleUI();
+        } else if (e.key === 'Escape' && State.uiOpen) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeUI();
+        }
+    }, { capture: true });
+
+    window.addEventListener('pointerdown', (e) => {
+        if (!State.uiOpen) return;
+        const host = document.getElementById('premid-rpc-host');
+        if (host && !e.composedPath().includes(host)) {
+            closeUI();
+        }
+    });
 
     function renderSettingsForm(shadow) {
         const container = shadow.querySelector('#modal-settings-container');
@@ -937,6 +991,7 @@
                 const next = masterToggle.checked;
                 setServiceEnabled(State.serviceName, next);
                 if (next) {
+                    RpcGateway.updateUIStatus();
                     PresenceRuntime.start();
                 } else {
                     PresenceRuntime.stop();
@@ -1156,11 +1211,7 @@
 
         registerMenuCommands();
 
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => injectShadowUI());
-        } else {
-            injectShadowUI();
-        }
+        injectShadowUI();
 
         if (isServiceEnabled(serviceName)) {
             await PresenceRuntime.start();
