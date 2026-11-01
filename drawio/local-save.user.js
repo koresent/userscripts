@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Draw.io] Local Save Bridge
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.1
+// @version        1.2.0
 // @description    Direct in-place local file saving and opening for Draw.io PWA without Save As dialogs
 // @author         Koresent
 // @license        GPL-3.0
@@ -12,7 +12,6 @@
 // @downloadURL    https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/drawio/local-save.user.js
 //
 // @match          *://app.diagrams.net/*
-// @match          *://embed.diagrams.net/*
 //
 // @connect        127.0.0.1
 // @connect        localhost
@@ -37,12 +36,10 @@
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: `${BRIDGE_BASE}/api/log`,
-                data: `[${location.hostname}] ${text}`
+                data: text
             });
         } catch (e) {}
     }
-
-    remoteLog('v1.1.1 (IndexedDB Native) started');
 
     function showToast(text, isError = false) {
         try {
@@ -80,61 +77,63 @@
         } catch (e) {}
     }
 
-    function writeToIdb(filename, xml) {
+    function openDatabase() {
         return new Promise((resolve, reject) => {
             const req = indexedDB.open('database', 2);
             req.onupgradeneeded = () => {
-                try {
-                    const db = req.result;
-                    if (!db.objectStoreNames.contains('objects')) db.createObjectStore('objects', { keyPath: 'key' });
-                    if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'title' });
-                    if (!db.objectStoreNames.contains('filesInfo')) db.createObjectStore('filesInfo', { keyPath: 'title' });
-                } catch (e) {
-                    reject(e);
-                }
+                const db = req.result;
+                if (!db.objectStoreNames.contains('objects')) db.createObjectStore('objects', { keyPath: 'key' });
+                if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'title' });
+                if (!db.objectStoreNames.contains('filesInfo')) db.createObjectStore('filesInfo', { keyPath: 'title' });
             };
-            req.onsuccess = () => {
-                try {
-                    const db = req.result;
-                    const tx = db.transaction(['files', 'filesInfo'], 'readwrite');
-                    tx.objectStore('files').put({ title: filename, data: xml });
-                    tx.objectStore('filesInfo').put({
-                        title: filename,
-                        size: xml.length,
-                        lastModified: Date.now(),
-                        type: 'F'
-                    });
-                    tx.oncomplete = () => resolve(true);
-                    tx.onerror = () => reject(tx.error);
-                } catch (e) {
-                    reject(e);
-                }
-            };
+            req.onsuccess = () => resolve(req.result);
             req.onerror = () => reject(req.error);
         });
     }
 
-    function readFromIdb(filename) {
-        return new Promise((resolve) => {
-            try {
-                const req = indexedDB.open('database', 2);
-                req.onsuccess = () => {
-                    try {
-                        const db = req.result;
-                        if (!db.objectStoreNames.contains('files')) return resolve(null);
-                        const tx = db.transaction(['files'], 'readonly');
-                        const getReq = tx.objectStore('files').get(filename);
-                        getReq.onsuccess = () => resolve(getReq.result ? getReq.result.data : null);
-                        getReq.onerror = () => resolve(null);
-                    } catch (e) {
-                        resolve(null);
-                    }
-                };
-                req.onerror = () => resolve(null);
-            } catch (e) {
-                resolve(null);
-            }
+    async function writeToIdb(filename, xml) {
+        const db = await openDatabase();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(['files', 'filesInfo'], 'readwrite');
+            tx.objectStore('files').put({ title: filename, data: xml });
+            tx.objectStore('filesInfo').put({
+                title: filename,
+                size: xml.length,
+                lastModified: Date.now(),
+                type: 'F'
+            });
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error);
         });
+    }
+
+    async function readFromIdb(filename) {
+        try {
+            const db = await openDatabase();
+            if (!db.objectStoreNames.contains('files')) return null;
+            return new Promise((resolve) => {
+                const tx = db.transaction(['files'], 'readonly');
+                const getReq = tx.objectStore('files').get(filename);
+                getReq.onsuccess = () => resolve(getReq.result ? getReq.result.data : null);
+                getReq.onerror = () => resolve(null);
+            });
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function updateHash(filename) {
+        const targetHash = '#L' + encodeURIComponent(filename);
+        if (window.location.hash.startsWith(targetHash)) {
+            try {
+                window.dispatchEvent(new HashChangeEvent('hashchange'));
+            } catch (err) {
+                window.location.hash = '';
+                setTimeout(() => { window.location.hash = targetHash; }, 50);
+            }
+        } else {
+            window.location.hash = targetHash;
+        }
     }
 
     async function syncToDisk() {
@@ -142,9 +141,6 @@
         try {
             const xml = await readFromIdb(currentFilename);
             if (!xml || xml === lastSyncedXml) return;
-
-            showToast('Saving to disk...');
-            remoteLog(`syncToDisk: saving ${xml.length} bytes to ${currentFilename}`);
 
             GM_xmlhttpRequest({
                 method: 'POST',
@@ -154,21 +150,17 @@
                 onload: function (res) {
                     if (res.status === 200) {
                         lastSyncedXml = xml;
-                        showToast('Saved to disk');
-                        remoteLog(`syncToDisk: successfully saved ${currentFilename}`);
+                        showToast(`Saved: ${currentFilename}`);
+                        remoteLog(`syncToDisk: saved ${currentFilename} (${xml.length} bytes)`);
                     } else {
                         showToast('Save failed!', true);
-                        remoteLog(`syncToDisk error: status ${res.status}`);
                     }
                 },
-                onerror: function (err) {
+                onerror: function () {
                     showToast('Save error!', true);
-                    remoteLog(`syncToDisk network error: ${err}`);
                 }
             });
-        } catch (e) {
-            remoteLog(`syncToDisk exception: ${e.message}`);
-        }
+        } catch (e) {}
     }
 
     function checkActiveSession() {
@@ -177,54 +169,34 @@
                 method: 'GET',
                 url: `${BRIDGE_BASE}/api/active_session`,
                 onload: function (res) {
-                    if (res.status === 200) {
-                        try {
-                            const data = JSON.parse(res.responseText);
-                            if (data && data.session && data.session !== currentSessionId) {
-                                const newSession = data.session;
-                                remoteLog(`checkActiveSession: new session detected ${newSession}`);
+                    if (res.status !== 200) return;
+                    try {
+                        const data = JSON.parse(res.responseText);
+                        if (!data || !data.session || data.session === currentSessionId) return;
 
-                                GM_xmlhttpRequest({
-                                    method: 'GET',
-                                    url: `${BRIDGE_BASE}/api/file?session=${encodeURIComponent(newSession)}`,
-                                    onload: async function (fres) {
-                                        if (fres.status === 200) {
-                                            try {
-                                                const fileData = JSON.parse(fres.responseText);
-                                                currentSessionId = newSession;
-                                                currentFilename = fileData.filename;
-                                                lastSyncedXml = fileData.xml;
+                        const newSession = data.session;
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: `${BRIDGE_BASE}/api/file?session=${encodeURIComponent(newSession)}`,
+                            onload: async function (fres) {
+                                if (fres.status !== 200) return;
+                                try {
+                                    const fileData = JSON.parse(fres.responseText);
+                                    currentSessionId = newSession;
+                                    currentFilename = fileData.filename;
+                                    lastSyncedXml = fileData.xml;
 
-                                                remoteLog(`checkActiveSession: writing ${fileData.filename} to IndexedDB`);
-                                                await writeToIdb(fileData.filename, fileData.xml);
-
-                                                const targetHash = '#L' + encodeURIComponent(fileData.filename);
-                                                if (window.location.hash.startsWith(targetHash)) {
-                                                    try {
-                                                        window.dispatchEvent(new HashChangeEvent('hashchange'));
-                                                    } catch (err) {
-                                                        window.location.hash = '';
-                                                        setTimeout(() => { window.location.hash = targetHash; }, 50);
-                                                    }
-                                                } else {
-                                                    window.location.hash = targetHash;
-                                                }
-                                                showToast(`Opened: ${fileData.filename}`);
-                                                remoteLog(`checkActiveSession: hash updated to #L${fileData.filename}`);
-                                            } catch (e) {
-                                                remoteLog(`checkActiveSession IDB write error: ${e.message}`);
-                                            }
-                                        }
-                                    }
-                                });
+                                    await writeToIdb(fileData.filename, fileData.xml);
+                                    updateHash(fileData.filename);
+                                    showToast(`Opened: ${fileData.filename}`);
+                                    remoteLog(`checkActiveSession: opened ${fileData.filename}`);
+                                } catch (e) {}
                             }
-                        } catch (e) {}
-                    }
+                        });
+                    } catch (e) {}
                 }
             });
-        } catch (e) {
-            remoteLog(`checkActiveSession error: ${e.message}`);
-        }
+        } catch (e) {}
     }
 
     window.addEventListener('focus', () => {
@@ -241,7 +213,7 @@
 
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === 's') {
-            setTimeout(syncToDisk, 350);
+            setTimeout(syncToDisk, 300);
         }
     });
 
