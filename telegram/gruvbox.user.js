@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
+// @version        1.1.0
 // @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, and peer wallpaper isolation
 // @author         Koresent
 // @license        GPL-3.0
@@ -25,6 +25,38 @@
 
   const win = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
+  function normalizeWallpaperSource(str) {
+    if (!str) return "";
+    const clean = str.trim().replace(/^url\(["']?|["']?\)$/gi, "");
+    if (!clean) return "";
+
+    if (/^(https?:\/\/|blob:|data:)/i.test(clean)) {
+      return clean;
+    }
+
+    if (clean.startsWith("iVBORw0KGgo")) {
+      return `data:image/png;base64,${clean}`;
+    }
+    if (clean.startsWith("/9j/")) {
+      return `data:image/jpeg;base64,${clean}`;
+    }
+    if (clean.startsWith("R0lGOD")) {
+      return `data:image/gif;base64,${clean}`;
+    }
+    if (clean.startsWith("UklGR")) {
+      return `data:image/webp;base64,${clean}`;
+    }
+    if (clean.startsWith("PHN2Zy") || clean.startsWith("PD94bW")) {
+      return `data:image/svg+xml;base64,${clean}`;
+    }
+
+    if (/^[A-Za-z0-9+/=]+$/.test(clean) && clean.length > 50) {
+      return `data:image/png;base64,${clean}`;
+    }
+
+    return clean;
+  }
+
   const CONFIG = {
     get isGruvbox() {
       return GM_getValue("tg_gruvbox_active", true);
@@ -37,7 +69,7 @@
       return GM_getValue("tg_gruvbox_wallpaper", "");
     },
     set wallpaperUrl(val) {
-      GM_setValue("tg_gruvbox_wallpaper", val.trim());
+      GM_setValue("tg_gruvbox_wallpaper", normalizeWallpaperSource(val));
     },
 
     get tileWallpaper() {
@@ -455,16 +487,19 @@
     } else {
       // Apply Gruvbox custom wallpaper
       layer.style.display = "block";
-      layer.style.backgroundImage = `url("${CONFIG.wallpaperUrl}")`;
+      const targetBg = `url("${CONFIG.wallpaperUrl}")`;
+      if (layer.style.backgroundImage !== targetBg) {
+        layer.style.backgroundImage = targetBg;
+      }
 
       if (CONFIG.tileWallpaper) {
-        layer.style.backgroundRepeat = "repeat";
-        layer.style.backgroundPosition = "top left";
-        layer.style.backgroundSize = CONFIG.tileSize;
+        if (layer.style.backgroundRepeat !== "repeat") layer.style.backgroundRepeat = "repeat";
+        if (layer.style.backgroundPosition !== "top left") layer.style.backgroundPosition = "top left";
+        if (layer.style.backgroundSize !== CONFIG.tileSize) layer.style.backgroundSize = CONFIG.tileSize;
       } else {
-        layer.style.backgroundRepeat = "no-repeat";
-        layer.style.backgroundPosition = "center center";
-        layer.style.backgroundSize = "cover";
+        if (layer.style.backgroundRepeat !== "no-repeat") layer.style.backgroundRepeat = "no-repeat";
+        if (layer.style.backgroundPosition !== "center center") layer.style.backgroundPosition = "center center";
+        if (layer.style.backgroundSize !== "cover") layer.style.backgroundSize = "cover";
       }
     }
   }
@@ -562,8 +597,8 @@
     panel.className = "tg-gruvbox-settings-panel";
     panel.innerHTML = `
             <div style="font-weight: 600; color: #b8bb26; margin-bottom: 8px;">Gruvbox Wallpaper Settings</div>
-            <div style="color: #a89984; margin-bottom: 2px;">Custom Wallpaper URL:</div>
-            <input type="text" id="gb-wp-url" placeholder="https://example.com/wallpaper.png" value="${CONFIG.wallpaperUrl || ""}">
+            <div style="color: #a89984; margin-bottom: 2px;">Custom Wallpaper (URL or Base64):</div>
+            <input type="text" id="gb-wp-url" placeholder="https://example.com/wallpaper.png or Base64">
 
             <label class="tg-gruvbox-checkbox-label">
                 <input type="checkbox" id="gb-wp-tile" class="tg-gruvbox-checkbox" ${CONFIG.tileWallpaper ? "checked" : ""}>
@@ -576,9 +611,37 @@
         `;
 
     const urlInput = panel.querySelector("#gb-wp-url");
-    urlInput.addEventListener("change", (e) => {
-      CONFIG.wallpaperUrl = e.target.value;
+    urlInput.value = CONFIG.wallpaperUrl || "";
+
+    const applyUrlInput = () => {
+      const normalized = normalizeWallpaperSource(urlInput.value);
+      CONFIG.wallpaperUrl = normalized;
       updateChatWallpaper();
+    };
+
+    urlInput.addEventListener("change", applyUrlInput);
+    urlInput.addEventListener("input", applyUrlInput);
+    urlInput.addEventListener("paste", (e) => {
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (const item of items) {
+          if (item.type.startsWith("image/")) {
+            e.preventDefault();
+            const file = item.getAsFile();
+            if (file) {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const dataUrl = reader.result;
+                urlInput.value = dataUrl;
+                CONFIG.wallpaperUrl = dataUrl;
+                updateChatWallpaper();
+              };
+              reader.readAsDataURL(file);
+              return;
+            }
+          }
+        }
+      }
     });
 
     const tileCheck = panel.querySelector("#gb-wp-tile");
