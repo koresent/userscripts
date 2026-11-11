@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.0
+// @version        1.1.1
 // @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, and peer wallpaper isolation
 // @author         Koresent
 // @license        GPL-3.0
@@ -112,6 +112,14 @@
         --primary-text-color: #ebdbb2 !important;
         --secondary-text-color: #a89984 !important;
         --message-out-background-color: #384323 !important;
+        --message-out-gradient-display: none !important;
+        --message-out-gradient-under: #384323 !important;
+        --message-out-time-color: #a89984 !important;
+        --message-out-status-color: #b8bb26 !important;
+        --message-time-color: #a89984 !important;
+        --message-status-color: #b8bb26 !important;
+        --message-in-time-color: #a89984 !important;
+        --message-in-status-color: #a89984 !important;
         --message-background-color: #32302f !important;
         --message-highlighting-color: #32302f !important;
         --message-highlighting-color-rgb: 50, 48, 47 !important;
@@ -213,34 +221,74 @@
     }
 
     /* Message bubbles */
-    html[data-gruvbox="true"] .bubbles-gradient {
-        opacity: 0 !important;
-        pointer-events: none !important;
+    html[data-gruvbox="true"] .bubble.is-out {
+        --border-start-start-radius: 15px !important;
+        --border-start-end-radius: 15px !important;
+        --border-end-start-radius: 15px !important;
+        --border-end-end-radius: 15px !important;
+        --message-out-background-color: #384323 !important;
+        --message-out-gradient-display: none !important;
+        --message-out-gradient-under: #384323 !important;
     }
-    html[data-gruvbox="true"] .bubble.is-out .bubble-content {
+    html[data-gruvbox="true"] .bubble.is-out .bubble-content,
+    html[data-gruvbox="true"] .bubble.is-out .bubble-content-background {
         background-color: #384323 !important;
+        background-image: none !important;
+        border-radius: 15px !important;
+        border-top-left-radius: 15px !important;
+        border-top-right-radius: 15px !important;
+        border-bottom-left-radius: 15px !important;
+        border-bottom-right-radius: 15px !important;
         color: #ebdbb2 !important;
         box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
-        border-radius: 15px !important;
     }
-    html[data-gruvbox="true"] .bubble.is-in .bubble-content {
+    html[data-gruvbox="true"] .bubble.is-in .bubble-content,
+    html[data-gruvbox="true"] .bubble.is-in .bubble-content-background {
         background-color: #32302f !important;
+        background-image: none !important;
+        border-radius: 15px !important;
         color: #ebdbb2 !important;
         box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
-        border-radius: 15px !important;
     }
     /* Tail corner nuances on last bubble in a group */
     html[data-gruvbox="true"] .bubble.is-out.can-have-tail.is-group-last .bubble-content,
-    html[data-gruvbox="true"] .bubble.is-out.can-have-tail.is-forced-rounded .bubble-content {
+    html[data-gruvbox="true"] .bubble.is-out.can-have-tail.is-group-last .bubble-content-background,
+    html[data-gruvbox="true"] .bubble.is-out.can-have-tail.is-forced-rounded .bubble-content,
+    html[data-gruvbox="true"] .bubble.is-out.can-have-tail.is-forced-rounded .bubble-content-background {
         border-bottom-right-radius: 4px !important;
     }
     html[data-gruvbox="true"] .bubble.is-in.can-have-tail.is-group-last .bubble-content,
-    html[data-gruvbox="true"] .bubble.is-in.can-have-tail.is-forced-rounded .bubble-content {
+    html[data-gruvbox="true"] .bubble.is-in.can-have-tail.is-group-last .bubble-content-background,
+    html[data-gruvbox="true"] .bubble.is-in.can-have-tail.is-forced-rounded .bubble-content,
+    html[data-gruvbox="true"] .bubble.is-in.can-have-tail.is-forced-rounded .bubble-content-background {
         border-bottom-left-radius: 4px !important;
     }
 
-    html[data-gruvbox="true"] .bubble .time {
+    /* Outgoing bubble gradient overlays */
+    html[data-gruvbox="true"] .bubbles-gradient,
+    html[data-gruvbox="true"] .bubbles-remover,
+    html[data-gruvbox="true"] .bubble-gradient,
+    html[data-gruvbox="true"] .bubble.is-out .bubble-gradient {
+        display: none !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+    }
+
+    /* Message timestamp, read checkmarks, and edited state */
+    html[data-gruvbox="true"] .bubble .time,
+    html[data-gruvbox="true"] .bubble .time-inner,
+    html[data-gruvbox="true"] .bubble .time-edited,
+    html[data-gruvbox="true"] .bubble .time-inner .time-edited,
+    html[data-gruvbox="true"] .bubble .time .i18n {
         color: #a89984 !important;
+    }
+    html[data-gruvbox="true"] .bubble .time-sending-status,
+    html[data-gruvbox="true"] .bubble .time-sending-status .tgico,
+    html[data-gruvbox="true"] .bubble .time-inner .time-sending-status,
+    html[data-gruvbox="true"] .bubble .time-sending-status.sending-status-is-read {
+        color: #b8bb26 !important;
+        fill: #b8bb26 !important;
     }
     html[data-gruvbox="true"] .bubble a {
         color: #b8bb26 !important;
@@ -296,6 +344,23 @@
     }
     html[data-gruvbox="true"] .chatlist-chat.active {
         background-color: #3c3836 !important;
+    }
+    html[data-gruvbox="true"] .chatlist-chat.active,
+    html[data-gruvbox="true"] .chatlist-chat.active .row-title,
+    html[data-gruvbox="true"] .chatlist-chat.active .peer-title,
+    html[data-gruvbox="true"] .chatlist-chat.active .user-title,
+    html[data-gruvbox="true"] .chatlist-chat.active .row-subtitle,
+    html[data-gruvbox="true"] .chatlist-chat.active .dialog-subtitle,
+    html[data-gruvbox="true"] .chatlist-chat.active .dialog-subtitle-parts,
+    html[data-gruvbox="true"] .chatlist-chat.active .dialog-subtitle-span,
+    html[data-gruvbox="true"] .chatlist-chat.active .message-time,
+    html[data-gruvbox="true"] .chatlist-chat.active .dialog-time-pill,
+    html[data-gruvbox="true"] .chatlist-chat.active .dialog-title-details,
+    html[data-gruvbox="true"] .chatlist-chat.active .i18n,
+    html[data-gruvbox="true"] .chatlist-chat.active .tgico,
+    html[data-gruvbox="true"] .chatlist-chat.active .message-status {
+        color: #fbf1c7 !important;
+        fill: #fbf1c7 !important;
     }
     html[data-gruvbox="true"] .unread,
     html[data-gruvbox="true"] .badge {
