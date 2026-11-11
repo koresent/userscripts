@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Avatar online ring indicator
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
+// @version        1.1.0
 // @description    Avatar online ring indicator instead of online dot
 // @author         Koresent
 // @license        GPL-3.0
@@ -25,6 +25,16 @@
       --avatar-ring-width: 2.5px;
       --avatar-ring-gap: 2px;
       --avatar-ring-active-color: #ffffff;
+      --avatar-ring-duration-in: 0.3s;
+      --avatar-ring-duration-out: 0.28s;
+      --avatar-ring-ease: cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      :root {
+        --avatar-ring-duration-in: 0s;
+        --avatar-ring-duration-out: 0s;
+      }
     }
 
     /* Hide native online dot */
@@ -34,46 +44,76 @@
       content: none !important;
     }
 
-    /* Online ring indicator */
-    .avatar.is-online,
-    .dialog-avatar.is-online {
-      outline: var(--avatar-ring-width) solid var(--avatar-ring-color) !important;
-      outline-offset: var(--avatar-ring-gap) !important;
+    /* Base ring state kept transparent and tucked inward so enter/exit transitions interpolate smoothly */
+    .avatar:not(.is-forum),
+    .dialog-avatar:not(.is-forum) {
+      --_ring-width: var(--avatar-ring-width);
+      --_ring-gap: var(--avatar-ring-gap);
+      --_ring-color: var(--avatar-ring-color);
+      outline: var(--_ring-width) solid transparent !important;
+      outline-offset: calc(var(--_ring-gap) - 2px) !important;
       border-radius: 50% !important;
-      transition: outline-color 0.2s ease, outline-offset 0.2s ease !important;
+      transition:
+        outline-color var(--avatar-ring-duration-out) var(--avatar-ring-ease),
+        outline-offset var(--avatar-ring-duration-out) var(--avatar-ring-ease);
+    }
+
+    /* Online ring indicator */
+    .avatar:not(.is-forum).is-online,
+    .dialog-avatar:not(.is-forum).is-online {
+      outline-color: var(--_ring-color) !important;
+      outline-offset: var(--_ring-gap) !important;
+      transition:
+        outline-color var(--avatar-ring-duration-in) var(--avatar-ring-ease),
+        outline-offset var(--avatar-ring-duration-in) var(--avatar-ring-ease);
     }
 
     /* Active chat item */
-    .chatlist-chat.active .avatar.is-online,
-    .chatlist-chat.active .dialog-avatar.is-online {
-      outline-color: var(--avatar-ring-active-color) !important;
+    .chatlist-chat.active .avatar:not(.is-forum),
+    .chatlist-chat.active .dialog-avatar:not(.is-forum) {
+      --_ring-color: var(--avatar-ring-active-color);
     }
 
     /* Chat bubble avatars */
-    .bubbles-group-avatar.is-online,
-    .bubbles-group-avatar-container .avatar.is-online {
-      outline-width: 2px !important;
-      outline-offset: 1.5px !important;
+    .bubbles-group-avatar:not(.is-forum),
+    .bubbles-group-avatar-container .avatar:not(.is-forum) {
+      --_ring-width: 2px;
+      --_ring-gap: 1.5px;
+    }
+
+    /* Preserve Telegram native sticky bottom transition alongside ring animation */
+    body.animation-level-2 .bubbles-group-avatar:not(.is-forum) {
+      transition:
+        bottom var(--transition-standard-out),
+        outline-color var(--avatar-ring-duration-out) var(--avatar-ring-ease),
+        outline-offset var(--avatar-ring-duration-out) var(--avatar-ring-ease);
+    }
+
+    body.animation-level-2 .bubbles-group-avatar:not(.is-forum).is-online {
+      transition:
+        bottom var(--transition-standard-out),
+        outline-color var(--avatar-ring-duration-in) var(--avatar-ring-ease),
+        outline-offset var(--avatar-ring-duration-in) var(--avatar-ring-ease);
     }
 
     /* Group member list avatars */
-    .chatlist-chat-abitbigger .avatar.is-online,
-    .chatlist-chat-abitbigger .dialog-avatar.is-online {
-      outline-width: var(--avatar-ring-width) !important;
-      outline-offset: var(--avatar-ring-gap) !important;
+    .chatlist-chat-abitbigger .avatar:not(.is-forum),
+    .chatlist-chat-abitbigger .dialog-avatar:not(.is-forum) {
+      --_ring-width: var(--avatar-ring-width);
+      --_ring-gap: var(--avatar-ring-gap);
     }
 
     /* Chat header avatar */
-    .chat-topbar .avatar.is-online,
-    .person-avatar.is-online {
-      outline-width: 2.5px !important;
-      outline-offset: 2px !important;
+    .chat-topbar .avatar:not(.is-forum),
+    .person-avatar:not(.is-forum) {
+      --_ring-width: 2.5px;
+      --_ring-gap: 2px;
     }
 
     /* Offset when stories ring is active */
-    .avatar.has-stories.is-online,
-    .dialog-avatar.has-stories.is-online {
-      outline-offset: calc(var(--avatar-ring-gap) + 3px) !important;
+    .avatar.has-stories:not(.is-forum),
+    .dialog-avatar.has-stories:not(.is-forum) {
+      --_ring-gap: calc(var(--avatar-ring-gap) + 3px);
     }
   `;
 
@@ -131,36 +171,35 @@
   }
 
   function checkAvatarOnline(avatar) {
-    // Retain Telegram's native is-online flag if already applied
-    if (avatar.classList.contains("is-online")) {
-      return true;
-    }
-
     const peerId = avatar.dataset.peerId;
     if (!peerId) return false;
     const numId = Number(peerId);
     if (!numId || numId <= 0) return false;
 
-    if (isUserOnline(numId)) {
-      return true;
+    const user = getApiUser(numId);
+    if (user) {
+      return isUserOnline(numId);
     }
 
-    // Text status fallback for contact and member rows
+    // Text status fallback for contact and member rows when API user is unavailable
     const row = avatar.closest(".chatlist-chat, .selector-user, .chatlist-chat-abitbigger");
     if (row) {
       const subtitle = row.querySelector(".dialog-subtitle, .row-subtitle");
       if (subtitle) {
         const text = subtitle.textContent.trim().toLowerCase();
-        if (
+        return (
           text === "online" ||
           text === "в сети" ||
           text === "en ligne" ||
           text === "en línea" ||
           text === "conectado"
-        ) {
-          return true;
-        }
+        );
       }
+    }
+
+    // Retain Telegram's native flag when neither API user nor subtitle is available
+    if (!avatar.dataset.twebRingManaged && avatar.classList.contains("is-online")) {
+      return true;
     }
 
     return false;
@@ -170,25 +209,35 @@
     const peerId = avatar.dataset.peerId;
     if (!peerId || Number(peerId) <= 0) return;
 
-    const isChatlistAvatar =
-      avatar.classList.contains("dialog-avatar") ||
-      !!avatar.closest(".chatlist-chat-bigger, #chatlist-container");
+    const isChatlistAvatar = !!avatar.closest(".chatlist-chat-bigger, #chatlist-container");
 
     if (isChatlistAvatar) {
-      // In the chat list, Telegram manages is-online on dialog avatars; do not strip it.
-      if (avatar.classList.contains("is-online")) {
+      // In the chat list, let Telegram manage its own native is-online flag
+      if (!avatar.dataset.twebRingManaged && avatar.classList.contains("is-online")) {
         return;
       }
       if (isUserOnline(peerId)) {
-        avatar.classList.add("is-online");
+        if (!avatar.classList.contains("is-online")) {
+          avatar.classList.add("is-online");
+          avatar.dataset.twebRingManaged = "1";
+        }
+      } else if (avatar.dataset.twebRingManaged === "1") {
+        avatar.classList.remove("is-online");
+        delete avatar.dataset.twebRingManaged;
       }
       return;
     }
 
-    // Non-chatlist avatars (group members, contacts, header)
+    // Non-chatlist avatars (group members, contacts, header, bubbles)
     const online = checkAvatarOnline(avatar);
-    if (avatar.classList.contains("is-online") !== online) {
-      avatar.classList.toggle("is-online", online);
+    if (online) {
+      if (!avatar.classList.contains("is-online")) {
+        avatar.classList.add("is-online");
+        avatar.dataset.twebRingManaged = "1";
+      }
+    } else if (avatar.classList.contains("is-online")) {
+      avatar.classList.remove("is-online");
+      delete avatar.dataset.twebRingManaged;
     }
   }
 
