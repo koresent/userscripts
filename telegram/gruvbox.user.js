@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.1
+// @version        1.1.2
 // @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, and peer wallpaper isolation
 // @author         Koresent
 // @license        GPL-3.0
@@ -177,6 +177,75 @@
     /* Active folder tab pill */
     html[data-gruvbox="true"] .menu-horizontal-div-item-background {
         background-color: #3c3836 !important;
+    }
+
+    /* Vertical folders sidebar */
+    html[data-gruvbox="true"] .folders-sidebar,
+    html[data-gruvbox="true"].night .folders-sidebar {
+        --folders-sidebar-item-color: #a89984 !important;
+        --folders-sidebar-item-selected-color: #b8bb26 !important;
+        --folders-sidebar-background: #282828 !important;
+        --folders-sidebar-background-hover: #32302f !important;
+        --folders-sidebar-item-ripple-color: rgba(184, 187, 38, 0.15) !important;
+        background-color: #282828 !important;
+        color: #a89984 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__background,
+    html[data-gruvbox="true"] .folders-sidebar__background--dark-pattern {
+        --folders-sidebar-background: #282828 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__background-gradient {
+        display: none !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__background-tint,
+    html[data-gruvbox="true"] .folders-sidebar__background--no-gradient .folders-sidebar__background-tint {
+        background-color: #282828 !important;
+        backdrop-filter: none !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__scrollable,
+    html[data-gruvbox="true"].night .folders-sidebar__scrollable {
+        --border-color: #3c3836 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__scrollable-position {
+        --scrollbar-color: #504945 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__folder-item {
+        color: #a89984 !important;
+        transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    html[data-gruvbox="true"].no-touch .folders-sidebar__folder-item:hover,
+    html[data-gruvbox="true"].no-touch .folders-sidebar__folder-item:active,
+    html[data-gruvbox="true"] .folders-sidebar__folder-item:hover,
+    html[data-gruvbox="true"] .folders-sidebar__folder-item.menu-open {
+        background-color: #32302f !important;
+        color: #ebdbb2 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__folder-item--selected,
+    html[data-gruvbox="true"] .folders-sidebar__folder-item--selected:hover {
+        background-color: #3c3836 !important;
+        color: #b8bb26 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__folder-item--selected .folders-sidebar__folder-item-icon,
+    html[data-gruvbox="true"] .folders-sidebar__folder-item--selected .folders-sidebar__folder-item-name {
+        color: #b8bb26 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__folder-item .c-ripple__circle {
+        background-color: rgba(184, 187, 38, 0.15) !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__folder-item-badge.badge-gray {
+        background-color: #504945 !important;
+        color: #ebdbb2 !important;
+    }
+    html[data-gruvbox="true"] .folders-sidebar__add-folders-button {
+        background-color: #282828 !important;
+        color: #a89984 !important;
+        border-inline-start-color: #3c3836 !important;
+    }
+    html[data-gruvbox="true"].no-touch .folders-sidebar__add-folders-button:hover,
+    html[data-gruvbox="true"].no-touch .folders-sidebar__add-folders-button:active,
+    html[data-gruvbox="true"] .folders-sidebar__add-folders-button:hover {
+        background-color: #32302f !important;
+        color: #ebdbb2 !important;
     }
 
     /* Keep page-chats transparent so chat backgrounds show properly */
