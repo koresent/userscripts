@@ -111,9 +111,9 @@
         --border-color: #3c3836 !important;
         --primary-text-color: #ebdbb2 !important;
         --secondary-text-color: #a89984 !important;
-        --message-out-background-color: #384323 !important;
+        --message-out-background-color: #504945 !important;
         --message-out-gradient-display: none !important;
-        --message-out-gradient-under: #384323 !important;
+        --message-out-gradient-under: #504945 !important;
         --message-out-time-color: #a89984 !important;
         --message-out-status-color: #b8bb26 !important;
         --message-time-color: #a89984 !important;
@@ -295,13 +295,13 @@
         --border-start-end-radius: 15px !important;
         --border-end-start-radius: 15px !important;
         --border-end-end-radius: 15px !important;
-        --message-out-background-color: #384323 !important;
+        --message-out-background-color: #504945 !important;
         --message-out-gradient-display: none !important;
-        --message-out-gradient-under: #384323 !important;
+        --message-out-gradient-under: #504945 !important;
     }
     html[data-gruvbox="true"] .bubble.is-out .bubble-content,
     html[data-gruvbox="true"] .bubble.is-out .bubble-content-background {
-        background-color: #384323 !important;
+        background-color: #504945 !important;
         background-image: none !important;
         border-radius: 15px !important;
         border-top-left-radius: 15px !important;
@@ -365,7 +365,7 @@
 
     /* Bubble tail colors */
     html[data-gruvbox="true"] .bubble.is-out .bubble-tail {
-        background-color: #384323 !important;
+        background-color: #504945 !important;
     }
     html[data-gruvbox="true"] .bubble.is-in .bubble-tail {
         background-color: #32302f !important;
@@ -663,7 +663,7 @@
       tile.innerHTML = `
                 <div class="tg-gruvbox-tile-inner" style="position: absolute; inset: 0; border-radius: inherit; overflow: hidden; pointer-events: none;">
                     <div class="theme-bubble is-in" style="position: absolute; top: 1.5rem; left: 0.375rem; width: 2.5rem; height: 1.25rem; border-radius: 10px; background-color: #32302f;"></div>
-                    <div class="theme-bubble is-out" style="position: absolute; top: 0.5rem; right: 0.375rem; width: 2.5rem; height: 1.25rem; border-radius: 10px; background-color: #384323;"></div>
+                    <div class="theme-bubble is-out" style="position: absolute; top: 0.5rem; right: 0.375rem; width: 2.5rem; height: 1.25rem; border-radius: 10px; background-color: #504945;"></div>
                     <div style="position: absolute; bottom: 0.375rem; left: 50%; transform: translateX(-50%); font-size: 1.25rem;">🌱</div>
                 </div>
             `;
