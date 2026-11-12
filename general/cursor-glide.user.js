@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.1
+// @version        1.2.0
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
@@ -90,8 +90,6 @@
     let activeElement = null;
     let cursorColor = 'rgba(255, 255, 255, 0.85)';
 
-    const isGoogleDocs = window.location.hostname === 'docs.google.com' && window.location.pathname.startsWith('/document/');
-
     function injectStyles() {
         const oldHider = document.getElementById('cursor-glide-hider');
         if (oldHider) oldHider.remove();
@@ -112,21 +110,9 @@
             }
 
             .monaco-editor .cursors-layer .cursor,
-            .cm-cursorLayer .cm-cursor {
+            .cm-cursorLayer .cm-cursor,
+            .kix-cursor {
                 opacity: 0 !important;
-            }
-
-            .kix-cursor,
-            .kix-cursor-caret {
-                transition: transform 80ms ease-out, left 80ms ease-out, top 80ms ease-out !important;
-            }
-
-            .kix-cursor-caret {
-                border-left-color: var(--cursor-custom-color, var(--darkreader-inline-border-left, currentColor)) !important;
-                border-left-width: 2px !important;
-                border-left-style: solid !important;
-                opacity: 1 !important;
-                visibility: visible !important;
             }
 
             .active-cell-border {
@@ -164,7 +150,7 @@
     }
 
     function initCanvas() {
-        if (canvas || isGoogleDocs) return;
+        if (canvas) return;
 
         canvas = document.createElement('canvas');
         canvas.id = 'cursor-glide-canvas';
@@ -311,7 +297,18 @@
     }
 
     function findTargetCaretRect() {
-        if (isGoogleDocs) return null;
+        const docsCaret = document.querySelector('.kix-cursor-caret');
+        if (docsCaret) {
+            const dRect = docsCaret.getBoundingClientRect();
+            if (dRect.height > 0 && dRect.top > 0) {
+                return {
+                    x: dRect.left,
+                    y: dRect.top,
+                    w: Math.max(dRect.width, CONFIG.cursorWidth),
+                    h: dRect.height
+                };
+            }
+        }
 
         const monacoCursor = document.querySelector('.monaco-editor.focused .cursors-layer .cursor, .monaco-editor .cursors-layer .cursor');
         if (monacoCursor) {
@@ -363,15 +360,17 @@
             if (cc && cc !== 'auto' && cc !== 'transparent') {
                 return cc;
             }
-            return style.color || 'rgb(255, 255, 255)';
+            const color = style.color || style.borderLeftColor;
+            if (color && color !== 'rgba(0, 0, 0, 0)') {
+                return color;
+            }
+            return 'rgb(255, 255, 255)';
         } catch {
             return `rgba(255, 255, 255, ${CONFIG.bgOpacity})`;
         }
     }
 
     function updateCursorTarget() {
-        if (isGoogleDocs) return;
-
         const raw = findTargetCaretRect();
         if (!raw) {
             if (isFocused) {
@@ -507,33 +506,44 @@
         }
     }
 
-    function setupListeners() {
-        if (isGoogleDocs) return;
+    let docsObserverAttached = false;
+    function tryAttachDocsObserver(scheduleUpdate) {
+        if (docsObserverAttached) return;
+        const docsCursor = document.querySelector('.kix-cursor');
+        if (docsCursor) {
+            docsObserverAttached = true;
+            const obs = new MutationObserver(scheduleUpdate);
+            obs.observe(docsCursor, { attributes: true, attributeFilter: ['style', 'class'] });
+        }
+    }
 
+    function setupListeners() {
         let scheduled = false;
         const scheduleUpdate = () => {
             if (scheduled) return;
             scheduled = true;
             requestAnimationFrame(() => {
                 scheduled = false;
+                tryAttachDocsObserver(scheduleUpdate);
                 updateCursorTarget();
             });
         };
 
         document.addEventListener('selectionchange', scheduleUpdate, { passive: true });
         document.addEventListener('input', scheduleUpdate, { passive: true });
-        document.addEventListener('keydown', scheduleUpdate, { passive: true });
-        document.addEventListener('keyup', scheduleUpdate, { passive: true });
-        document.addEventListener('click', scheduleUpdate, { passive: true });
+        document.addEventListener('keydown', scheduleUpdate, { passive: true, capture: true });
+        document.addEventListener('keyup', scheduleUpdate, { passive: true, capture: true });
+        document.addEventListener('click', scheduleUpdate, { passive: true, capture: true });
         document.addEventListener('focusin', () => {
             cachedStyleElement = null;
             scheduleUpdate();
-        }, { passive: true });
+        }, { passive: true, capture: true });
 
         document.addEventListener('focusout', () => {
             setTimeout(() => {
                 const deep = getDeepActiveElement();
-                if (!deep || deep === document.body) {
+                const docsCaret = document.querySelector('.kix-cursor-caret');
+                if ((!deep || deep === document.body) && !docsCaret) {
                     isFocused = false;
                     clearCanvas();
                 } else {
@@ -543,6 +553,7 @@
         }, { passive: true });
 
         window.addEventListener('scroll', scheduleUpdate, { passive: true, capture: true });
+        tryAttachDocsObserver(scheduleUpdate);
     }
 
     injectStyles();
