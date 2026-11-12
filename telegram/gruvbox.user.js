@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.3
+// @version        1.1.4
 // @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, and peer wallpaper isolation
 // @author         Koresent
 // @license        GPL-3.0
@@ -428,9 +428,16 @@
     html[data-gruvbox="true"] .chatlist-chat.active .dialog-title-details,
     html[data-gruvbox="true"] .chatlist-chat.active .i18n,
     html[data-gruvbox="true"] .chatlist-chat.active .tgico,
-    html[data-gruvbox="true"] .chatlist-chat.active .message-status {
+    html[data-gruvbox="true"] .chatlist-chat.active .message-status,
+    html[data-gruvbox="true"] .chatlist-chat.active .peer-typing-container,
+    html[data-gruvbox="true"] .chatlist-chat.active .peer-typing,
+    html[data-gruvbox="true"] .chatlist-chat.active .peer-typing-text {
+        --color: #fbf1c7 !important;
         color: #fbf1c7 !important;
         fill: #fbf1c7 !important;
+    }
+    html[data-gruvbox="true"] .chatlist-chat.active .peer-typing-text-dot {
+        background-color: currentColor !important;
     }
     html[data-gruvbox="true"] .unread,
     html[data-gruvbox="true"] .badge {
