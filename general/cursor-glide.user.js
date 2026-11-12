@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.2.0
+// @version        1.2.1
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
@@ -422,34 +422,45 @@
 
     function drawCaretShape(leadX, leadY, trailX, trailY, w, h) {
         const r = Math.min(CONFIG.cornerRadius, Math.min(w, h) * 0.5);
+        const dx = leadX - trailX;
+        const dy = leadY - trailY;
 
         ctx.beginPath();
-        if (Math.hypot(leadX - trailX, leadY - trailY) < 0.5) {
+        if (Math.hypot(dx, dy) < 0.5) {
             ctx.roundRect(leadX - w * 0.5, leadY - h * 0.5, w, h, r);
+        } else if (Math.abs(dy) < 0.5) {
+            const minX = Math.min(trailX, leadX) - w * 0.5;
+            const maxX = Math.max(trailX, leadX) + w * 0.5;
+            ctx.roundRect(minX, leadY - h * 0.5, maxX - minX, h, r);
+        } else if (Math.abs(dx) < 0.5) {
+            const minY = Math.min(trailY, leadY) - h * 0.5;
+            const maxY = Math.max(trailY, leadY) + h * 0.5;
+            ctx.roundRect(leadX - w * 0.5, minY, w, maxY - minY, r);
         } else {
-            ctx.roundRect(trailX - w * 0.5, trailY - h * 0.5, w, h, r);
-            ctx.roundRect(leadX - w * 0.5, leadY - h * 0.5, w, h, r);
-
-            const dx = leadX - trailX;
-            const dy = leadY - trailY;
-            let c1, c2, c3, c4;
-
-            if (dx * dy >= 0) {
-                c1 = { x: trailX - w * 0.5, y: trailY + h * 0.5 };
-                c2 = { x: trailX + w * 0.5, y: trailY - h * 0.5 };
-                c3 = { x: leadX + w * 0.5, y: leadY - h * 0.5 };
-                c4 = { x: leadX - w * 0.5, y: leadY + h * 0.5 };
-            } else {
-                c1 = { x: trailX - w * 0.5, y: trailY - h * 0.5 };
-                c2 = { x: trailX + w * 0.5, y: trailY + h * 0.5 };
-                c3 = { x: leadX + w * 0.5, y: leadY + h * 0.5 };
-                c4 = { x: leadX - w * 0.5, y: leadY - h * 0.5 };
+            let ax = trailX, ay = trailY, bx = leadX, by = leadY;
+            if (ax > bx) {
+                ax = leadX; ay = leadY;
+                bx = trailX; by = trailY;
             }
 
-            ctx.moveTo(c1.x, c1.y);
-            ctx.lineTo(c2.x, c2.y);
-            ctx.lineTo(c3.x, c3.y);
-            ctx.lineTo(c4.x, c4.y);
+            ctx.roundRect(ax - w * 0.5, ay - h * 0.5, w, h, r);
+            ctx.roundRect(bx - w * 0.5, by - h * 0.5, w, h, r);
+
+            if (by >= ay) {
+                ctx.moveTo(ax - w * 0.5, ay - h * 0.5);
+                ctx.lineTo(ax + w * 0.5, ay - h * 0.5);
+                ctx.lineTo(bx + w * 0.5, by - h * 0.5);
+                ctx.lineTo(bx + w * 0.5, by + h * 0.5);
+                ctx.lineTo(bx - w * 0.5, by + h * 0.5);
+                ctx.lineTo(ax - w * 0.5, ay + h * 0.5);
+            } else {
+                ctx.moveTo(ax - w * 0.5, ay - h * 0.5);
+                ctx.lineTo(bx - w * 0.5, by - h * 0.5);
+                ctx.lineTo(bx + w * 0.5, by - h * 0.5);
+                ctx.lineTo(bx + w * 0.5, by + h * 0.5);
+                ctx.lineTo(ax + w * 0.5, ay + h * 0.5);
+                ctx.lineTo(ax - w * 0.5, ay + h * 0.5);
+            }
             ctx.closePath();
         }
         ctx.fill();
