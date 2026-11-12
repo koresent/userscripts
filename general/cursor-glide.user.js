@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
+// @version        1.1.0
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
-// @icon           https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/webtools.png
+// @icon           https://img.icons8.com/?size=100&id=18711&format=png&color=000000
 // @homepageURL    https://github.com/koresent/userscripts
 // @supportURL     https://github.com/koresent/userscripts/issues
 // @updateURL      https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/general/cursor-glide.user.js
@@ -18,6 +18,10 @@
 // @match          *://github.dev/*
 // @match          *://vscode.dev/*
 // @match          *://stackblitz.com/*
+// @match          *://github.com/*
+// @match          *://*.github.com/*
+// @match          *://gitlab.com/*
+// @match          *://*.gitlab.com/*
 // @match          *://www.google.com/*
 // @match          *://google.com/*
 // @match          *://www.youtube.com/*
@@ -25,7 +29,7 @@
 // @match          *://discord.com/*
 // @match          *://web.telegram.org/k/*
 // @match          *://www.reddit.com/*
-// @match          *://reddit.com/*
+// @match          *://*.reddit.com/*
 //
 // @run-at         document-start
 //
@@ -82,14 +86,15 @@
     let curRect = null;
     let animStartTime = 0;
     let isAnimating = false;
-    let lastBlinkTime = 0;
     let isFocused = false;
     let activeElement = null;
     let cursorColor = 'rgba(255, 255, 255, 0.85)';
 
-    function injectCursorHiderStyles() {
+    const isGoogleDocs = window.location.hostname === 'docs.google.com' && window.location.pathname.startsWith('/document/');
+
+    function injectStyles() {
         const style = document.createElement('style');
-        style.id = 'cursor-glide-hider';
+        style.id = 'cursor-glide-styles';
         style.textContent = `
             input:not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
             textarea,
@@ -98,22 +103,52 @@
                 caret-color: transparent !important;
             }
 
-            .monaco-editor .cursors-layer .cursor {
+            .monaco-editor .cursors-layer .cursor,
+            .cm-cursorLayer .cm-cursor {
                 opacity: 0 !important;
             }
 
             .kix-cursor,
-            .kix-cursor-caret,
-            .docs-text-ui-cursor,
-            .docs-text-ui-cursor-blink {
-                opacity: 0 !important;
+            .kix-cursor-caret {
+                transition: left 80ms ease-out, top 80ms ease-out !important;
+            }
+
+            .active-cell-border {
+                transition: all 80ms ease-out !important;
             }
         `;
         (document.head || document.documentElement).appendChild(style);
     }
 
+    function hideNativeCaret(el) {
+        if (!el || !el.style) return;
+        el.style.setProperty('caret-color', 'transparent', 'important');
+        const root = el.getRootNode();
+        if (root && root instanceof ShadowRoot && !root.getElementById('cursor-glide-shadow-styles')) {
+            const style = document.createElement('style');
+            style.id = 'cursor-glide-shadow-styles';
+            style.textContent = `
+                input:not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+                textarea,
+                [contenteditable="true"],
+                [role="textbox"] {
+                    caret-color: transparent !important;
+                }
+            `;
+            root.appendChild(style);
+        }
+    }
+
+    function getDeepActiveElement(root = document) {
+        let el = root.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+            el = el.shadowRoot.activeElement;
+        }
+        return el;
+    }
+
     function initCanvas() {
-        if (canvas) return;
+        if (canvas || isGoogleDocs) return;
 
         canvas = document.createElement('canvas');
         canvas.id = 'cursor-glide-canvas';
@@ -143,9 +178,14 @@
         canvas.height = Math.round(h * dpr);
         ctx.resetTransform();
         ctx.scale(dpr, dpr);
+        cachedStyleElement = null;
     }
 
     let mirrorDiv = null;
+    let mirrorMarker = null;
+    let cachedStyleElement = null;
+    let cachedLineHeight = 16;
+
     const MIRROR_PROPS = [
         'direction', 'boxSizing', 'width', 'overflowX', 'overflowY',
         'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
@@ -153,52 +193,61 @@
         'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
         'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize',
         'lineHeight', 'fontFamily', 'textAlign', 'textTransform', 'textIndent',
-        'letterSpacing', 'wordSpacing', 'whiteSpace', 'wordWrap'
+        'letterSpacing', 'wordSpacing'
     ];
 
-    function getMirrorDiv() {
+    function initMirrorDiv() {
         if (!mirrorDiv) {
             mirrorDiv = document.createElement('div');
+            mirrorDiv.id = 'cursor-glide-mirror';
             mirrorDiv.style.cssText = `
-                position: absolute !important;
+                position: fixed !important;
+                top: -99999px !important;
+                left: -99999px !important;
+                contain: strict !important;
                 visibility: hidden !important;
                 pointer-events: none !important;
-                top: 0 !important;
-                left: 0 !important;
                 z-index: -9999 !important;
             `;
-            document.body.appendChild(mirrorDiv);
+            mirrorMarker = document.createElement('span');
+            mirrorMarker.textContent = '|';
+            (document.body || document.documentElement).appendChild(mirrorDiv);
         }
         return mirrorDiv;
     }
 
-    function measureInputCaret(el) {
-        const mirror = getMirrorDiv();
+    function syncMirrorStyles(el) {
+        if (cachedStyleElement === el) return;
+        cachedStyleElement = el;
+
+        const mirror = initMirrorDiv();
         const style = window.getComputedStyle(el);
         const isInput = el.tagName === 'INPUT';
 
-        MIRROR_PROPS.forEach(prop => {
+        for (let i = 0; i < MIRROR_PROPS.length; i++) {
+            const prop = MIRROR_PROPS[i];
             mirror.style[prop] = style[prop];
-        });
+        }
 
-        mirror.style.position = 'absolute';
-        mirror.style.visibility = 'hidden';
         mirror.style.whiteSpace = isInput ? 'pre' : 'pre-wrap';
         mirror.style.wordWrap = isInput ? 'normal' : 'break-word';
+        cachedLineHeight = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) * 1.2) || 16;
+    }
+
+    function measureInputCaret(el) {
+        syncMirrorStyles(el);
+        const mirror = mirrorDiv;
 
         const pos = el.selectionStart || 0;
-        const textBefore = el.value.substring(0, pos);
-        mirror.textContent = textBefore;
-
-        const marker = document.createElement('span');
-        marker.textContent = el.value.substring(pos) || '|';
-        mirror.appendChild(marker);
+        const text = el.value || '';
+        mirror.textContent = text.substring(0, pos);
+        mirrorMarker.textContent = text.substring(pos) || '|';
+        mirror.appendChild(mirrorMarker);
 
         const elRect = el.getBoundingClientRect();
-        const markerLeft = marker.offsetLeft;
-        const markerTop = marker.offsetTop;
+        const markerLeft = mirrorMarker.offsetLeft;
+        const markerTop = mirrorMarker.offsetTop;
 
-        const lineHeight = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) * 1.2) || 16;
         const x = elRect.left + markerLeft - el.scrollLeft;
         const y = elRect.top + markerTop - el.scrollTop;
 
@@ -206,7 +255,7 @@
             x: Math.max(elRect.left, Math.min(elRect.right, x)),
             y: Math.max(elRect.top, Math.min(elRect.bottom, y)),
             w: CONFIG.cursorWidth,
-            h: Math.min(elRect.height, lineHeight)
+            h: Math.min(elRect.height, cachedLineHeight)
         };
     }
 
@@ -246,6 +295,8 @@
     }
 
     function findTargetCaretRect() {
+        if (isGoogleDocs) return null;
+
         const monacoCursor = document.querySelector('.monaco-editor.focused .cursors-layer .cursor, .monaco-editor .cursors-layer .cursor');
         if (monacoCursor) {
             const mRect = monacoCursor.getBoundingClientRect();
@@ -259,21 +310,8 @@
             }
         }
 
-        const docsCursor = document.querySelector('.kix-cursor, .kix-cursor-caret, .docs-text-ui-cursor');
-        if (docsCursor) {
-            const dRect = docsCursor.getBoundingClientRect();
-            if (dRect.height > 0) {
-                return {
-                    x: dRect.left,
-                    y: dRect.top,
-                    w: Math.max(dRect.width, CONFIG.cursorWidth),
-                    h: dRect.height
-                };
-            }
-        }
-
         const formulaInput = document.querySelector('.cell-input, #t-formula-bar-input');
-        if (formulaInput && document.activeElement === formulaInput) {
+        if (formulaInput && (document.activeElement === formulaInput || formulaInput.contains(document.activeElement))) {
             const fRect = formulaInput.getBoundingClientRect();
             return {
                 x: fRect.left,
@@ -283,14 +321,16 @@
             };
         }
 
-        const el = document.activeElement;
+        const el = getDeepActiveElement();
         if (!el) return null;
+
+        hideNativeCaret(el);
 
         if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
             return measureInputCaret(el);
         }
 
-        if (el.isContentEditable || el.getAttribute('role') === 'textbox') {
+        if (el.isContentEditable || el.getAttribute('role') === 'textbox' || el.classList.contains('cm-content')) {
             return measureContentEditableCaret();
         }
 
@@ -307,14 +347,15 @@
             if (cc && cc !== 'auto' && cc !== 'transparent') {
                 return cc;
             }
-            const color = style.color || 'rgb(255, 255, 255)';
-            return color;
+            return style.color || 'rgb(255, 255, 255)';
         } catch {
             return `rgba(255, 255, 255, ${CONFIG.bgOpacity})`;
         }
     }
 
     function updateCursorTarget() {
+        if (isGoogleDocs) return;
+
         const raw = findTargetCaretRect();
         if (!raw) {
             if (isFocused) {
@@ -325,7 +366,7 @@
         }
 
         isFocused = true;
-        activeElement = document.activeElement;
+        activeElement = getDeepActiveElement();
         cursorColor = detectCursorColor(activeElement);
 
         const target = {
@@ -339,7 +380,6 @@
             prevRect = { ...target };
             curRect = { ...target };
             animStartTime = performance.now();
-            lastBlinkTime = performance.now();
             startLoop();
             return;
         }
@@ -356,7 +396,6 @@
             }
             curRect = { ...target };
             animStartTime = performance.now();
-            lastBlinkTime = performance.now();
             startLoop();
         }
     }
@@ -366,51 +405,7 @@
         ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
     }
 
-    function renderFrame(now) {
-        if (!isFocused || !curRect || !prevRect) {
-            clearCanvas();
-            isAnimating = false;
-            return;
-        }
-
-        const elapsed = (now - animStartTime) / CONFIG.duration;
-        const t = Math.min(Math.max(elapsed, 0.0), 1.0);
-
-        const moveDx = curRect.cx - prevRect.cx;
-        const moveDy = curRect.cy - prevRect.cy;
-        const moveDist = Math.hypot(moveDx, moveDy);
-
-        clearCanvas();
-
-        let leadX, leadY, trailX, trailY;
-        let smearAlpha = CONFIG.bgOpacity;
-
-        if (t >= 1.0 || moveDist < 1.0) {
-            leadX = trailX = curRect.cx;
-            leadY = trailY = curRect.cy;
-
-            const blinkElapsed = (now - lastBlinkTime) % 1000;
-            const blinkVal = 0.5 + 0.5 * Math.cos((blinkElapsed / 1000) * 2 * Math.PI);
-            smearAlpha = CONFIG.bgOpacity * (0.35 + 0.65 * blinkVal);
-        } else {
-            const tLead = easeLeading(t);
-            const tTrail = (1.0 - CONFIG.trailSmear) * tLead + CONFIG.trailSmear * easeTrailing(t);
-
-            leadX = prevRect.cx + moveDx * tLead;
-            leadY = prevRect.cy + moveDy * tLead;
-            trailX = prevRect.cx + moveDx * tTrail;
-            trailY = prevRect.cy + moveDy * tTrail;
-
-            smearAlpha = CONFIG.bgOpacity;
-            lastBlinkTime = now;
-        }
-
-        ctx.save();
-        ctx.fillStyle = cursorColor;
-        ctx.globalAlpha = smearAlpha;
-
-        const w = curRect.w;
-        const h = curRect.h;
+    function drawCaretShape(leadX, leadY, trailX, trailY, w, h) {
         const r = Math.min(CONFIG.cornerRadius, Math.min(w, h) * 0.5);
 
         ctx.beginPath();
@@ -443,9 +438,46 @@
             ctx.closePath();
         }
         ctx.fill();
+    }
+
+    function renderFrame(now) {
+        if (!isFocused || !curRect || !prevRect) {
+            clearCanvas();
+            isAnimating = false;
+            return;
+        }
+
+        const elapsed = (now - animStartTime) / CONFIG.duration;
+        const t = Math.min(Math.max(elapsed, 0.0), 1.0);
+
+        const moveDx = curRect.cx - prevRect.cx;
+        const moveDy = curRect.cy - prevRect.cy;
+        const moveDist = Math.hypot(moveDx, moveDy);
+
+        clearCanvas();
+
+        let leadX, leadY, trailX, trailY;
+
+        if (t >= 1.0 || moveDist < 1.0) {
+            leadX = trailX = curRect.cx;
+            leadY = trailY = curRect.cy;
+        } else {
+            const tLead = easeLeading(t);
+            const tTrail = (1.0 - CONFIG.trailSmear) * tLead + CONFIG.trailSmear * easeTrailing(t);
+
+            leadX = prevRect.cx + moveDx * tLead;
+            leadY = prevRect.cy + moveDy * tLead;
+            trailX = prevRect.cx + moveDx * tTrail;
+            trailY = prevRect.cy + moveDy * tTrail;
+        }
+
+        ctx.save();
+        ctx.fillStyle = cursorColor;
+        ctx.globalAlpha = CONFIG.bgOpacity;
+        drawCaretShape(leadX, leadY, trailX, trailY, curRect.w, curRect.h);
         ctx.restore();
 
-        if (t < 1.0 || (isFocused && document.hasFocus())) {
+        if (t < 1.0) {
             requestAnimationFrame(renderFrame);
         } else {
             isAnimating = false;
@@ -460,8 +492,16 @@
     }
 
     function setupListeners() {
+        if (isGoogleDocs) return;
+
+        let scheduled = false;
         const scheduleUpdate = () => {
-            requestAnimationFrame(updateCursorTarget);
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                updateCursorTarget();
+            });
         };
 
         document.addEventListener('selectionchange', scheduleUpdate, { passive: true });
@@ -469,10 +509,15 @@
         document.addEventListener('keydown', scheduleUpdate, { passive: true });
         document.addEventListener('keyup', scheduleUpdate, { passive: true });
         document.addEventListener('click', scheduleUpdate, { passive: true });
-        document.addEventListener('focusin', scheduleUpdate, { passive: true });
+        document.addEventListener('focusin', () => {
+            cachedStyleElement = null;
+            scheduleUpdate();
+        }, { passive: true });
+
         document.addEventListener('focusout', () => {
             setTimeout(() => {
-                if (!document.activeElement || document.activeElement === document.body) {
+                const deep = getDeepActiveElement();
+                if (!deep || deep === document.body) {
                     isFocused = false;
                     clearCanvas();
                 } else {
@@ -482,17 +527,9 @@
         }, { passive: true });
 
         window.addEventListener('scroll', scheduleUpdate, { passive: true, capture: true });
-
-        const observer = new MutationObserver(scheduleUpdate);
-        observer.observe(document.documentElement, {
-            subtree: true,
-            childList: true,
-            attributes: true,
-            attributeFilter: ['style', 'class']
-        });
     }
 
-    injectCursorHiderStyles();
+    injectStyles();
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
