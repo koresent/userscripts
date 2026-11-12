@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name           ⚙ [Telegram] Redirect t.me to Web K
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.1
-// @description    Redirects all t.me, telegram.me, and telegram.dog links directly to Telegram Web K
+// @version        1.1.0
+// @description    Redirects all t.me links into the active Telegram Web K PWA window
 // @author         Koresent
 // @license        GPL-3.0
 // @icon           https://web.telegram.org/favicon.ico
@@ -17,6 +17,7 @@
 // @match          *://*.telegram.me/*
 // @match          *://telegram.dog/*
 // @match          *://*.telegram.dog/*
+// @match          https://web.telegram.org/k/*
 //
 // @run-at         document-start
 // @grant          none
@@ -25,9 +26,84 @@
 (function () {
   'use strict';
 
-  const WEB_K_BASE = 'https://web.telegram.org/k/';
+  const CHANNEL_NAME = 'telegram_pwa_bridge';
+  const BRIDGE_FOCUS_URL = 'https://zen-bridge.lan/api/telegram-focus';
 
-  function getTargetUrl(url) {
+  if (window.location.hostname === 'web.telegram.org') {
+    const params = new URLSearchParams(window.location.search);
+    const isRelay = params.has('relay');
+    const isPWA = sessionStorage.getItem('telegram_is_pwa') === '1' || params.has('pwa');
+
+    if (isPWA && !isRelay) {
+      sessionStorage.setItem('telegram_is_pwa', '1');
+
+      const bc = new BroadcastChannel(CHANNEL_NAME);
+      bc.onmessage = async (e) => {
+        const data = e.data;
+        if (!data) return;
+
+        if (data.type === 'ping') {
+          bc.postMessage({ type: 'pong' });
+          return;
+        }
+
+        if (data.type === 'open_link' && data.targetHash) {
+          bc.postMessage({ type: 'ack' });
+
+          try {
+            await fetch(BRIDGE_FOCUS_URL, { method: 'POST' });
+          } catch (_) {}
+
+          if (window.location.hash === data.targetHash) {
+            window.location.reload();
+          } else {
+            window.location.hash = data.targetHash;
+            window.location.reload();
+          }
+        }
+      };
+      return;
+    }
+
+    if (isRelay) {
+      const targetHash = window.location.hash;
+      const bc = new BroadcastChannel(CHANNEL_NAME);
+      let handled = false;
+
+      function closeOrBack() {
+        handled = true;
+        window.close();
+        setTimeout(() => {
+          if (!window.closed && window.history.length > 1) {
+            window.history.back();
+          }
+        }, 100);
+      }
+
+      bc.onmessage = (e) => {
+        if (e.data?.type === 'ack') {
+          closeOrBack();
+        }
+      };
+
+      bc.postMessage({ type: 'open_link', targetHash });
+      fetch(BRIDGE_FOCUS_URL, { method: 'POST' }).catch(() => {});
+
+      setTimeout(() => {
+        if (!handled) {
+          const normalUrl = new URL(window.location.href);
+          normalUrl.searchParams.delete('relay');
+          window.location.replace(normalUrl.toString());
+        }
+      }, 350);
+
+      return;
+    }
+
+    return;
+  }
+
+  function getTargetHash(url) {
     const pathname = url.pathname.replace(/^\/+|\/+$/g, '');
     if (!pathname) {
       return null;
@@ -43,19 +119,17 @@
     if (first === 's' && segments.length > 1) {
       const channel = segments[1];
       const postId = segments[2];
-      return postId
-        ? `${WEB_K_BASE}#@${channel}/${postId}`
-        : `${WEB_K_BASE}#@${channel}`;
+      return postId ? `#@${channel}/${postId}` : `#@${channel}`;
     }
 
     if (first.startsWith('+')) {
       const tgScheme = `tg://join?invite=${first.slice(1)}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'joinchat' && segments[1]) {
       const tgScheme = `tg://join?invite=${segments[1]}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'c' && segments[1] && segments[2]) {
@@ -63,42 +137,42 @@
       const postId = segments[2];
       // Telegram Web K references private channels via -100 prefix
       const formattedChannelId = channelId.startsWith('-100') ? channelId : `-100${channelId}`;
-      return `${WEB_K_BASE}#${formattedChannelId}/${postId}`;
+      return `#${formattedChannelId}/${postId}`;
     }
 
     if (first === 'share') {
       const tgScheme = `tg://msg_url${url.search}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'addstickers' && segments[1]) {
       const tgScheme = `tg://addstickers?set=${segments[1]}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'addemoji' && segments[1]) {
       const tgScheme = `tg://addemoji?set=${segments[1]}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'addtheme' && segments[1]) {
       const tgScheme = `tg://addtheme?slug=${segments[1]}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'setlanguage' && segments[1]) {
       const tgScheme = `tg://setlanguage?lang=${segments[1]}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'proxy' || first === 'socks') {
       const tgScheme = `tg://${first}${url.search}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (first === 'invoice' && segments[1]) {
       const tgScheme = `tg://invoice?slug=${segments[1]}`;
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     const username = first;
@@ -114,18 +188,18 @@
       for (const [key, val] of params.entries()) {
         tgScheme += `&${encodeURIComponent(key)}=${encodeURIComponent(val)}`;
       }
-      return `${WEB_K_BASE}#?tgaddr=${encodeURIComponent(tgScheme)}`;
+      return `#?tgaddr=${encodeURIComponent(tgScheme)}`;
     }
 
     if (postId) {
-      return `${WEB_K_BASE}#@${username}/${postId}`;
+      return `#@${username}/${postId}`;
     }
 
-    return `${WEB_K_BASE}#@${username}`;
+    return `#@${username}`;
   }
 
-  const targetUrl = getTargetUrl(new URL(window.location.href));
-  if (targetUrl) {
-    window.location.replace(targetUrl);
+  const targetHash = getTargetHash(new URL(window.location.href));
+  if (targetHash) {
+    window.location.replace(`https://web.telegram.org/k/?relay=1${targetHash}`);
   }
 })();
