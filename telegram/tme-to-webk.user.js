@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram] Redirect t.me to Web K
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.0
+// @version        1.1.1
 // @description    Redirects all t.me links into the active Telegram Web K PWA window
 // @author         Koresent
 // @license        GPL-3.0
@@ -54,12 +54,12 @@
             await fetch(BRIDGE_FOCUS_URL, { method: 'POST' });
           } catch (_) {}
 
-          if (window.location.hash === data.targetHash) {
-            window.location.reload();
-          } else {
-            window.location.hash = data.targetHash;
-            window.location.reload();
-          }
+          // Changing query parameter forces full navigation so Web K parses the new hash on boot
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set('pwa', '1');
+          nextUrl.searchParams.set('_t', String(Date.now()));
+          nextUrl.hash = data.targetHash;
+          window.location.replace(nextUrl.toString());
         }
       };
       return;
