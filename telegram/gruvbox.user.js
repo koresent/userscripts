@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.2
+// @version        1.1.3
 // @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, and peer wallpaper isolation
 // @author         Koresent
 // @license        GPL-3.0
@@ -132,6 +132,7 @@
         --input-placeholder-color: #7c6f64 !important;
         --theme-background-color: #1d2021 !important;
         --avatar-online-color: #b8bb26 !important;
+        --avatar-ring-active-color: #fbf1c7 !important;
         --light-filled-primary-color: #3c3836 !important;
         --light-primary-color: rgba(184, 187, 38, 0.15) !important;
     }
