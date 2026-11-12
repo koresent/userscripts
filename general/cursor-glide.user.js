@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.0
+// @version        1.1.1
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
@@ -93,9 +93,17 @@
     const isGoogleDocs = window.location.hostname === 'docs.google.com' && window.location.pathname.startsWith('/document/');
 
     function injectStyles() {
+        const oldHider = document.getElementById('cursor-glide-hider');
+        if (oldHider) oldHider.remove();
+
         const style = document.createElement('style');
         style.id = 'cursor-glide-styles';
+        const customColorProp = CONFIG.customColor ? `--cursor-custom-color: ${CONFIG.customColor};` : '';
         style.textContent = `
+            :root {
+                ${customColorProp}
+            }
+
             input:not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
             textarea,
             [contenteditable="true"],
@@ -110,7 +118,15 @@
 
             .kix-cursor,
             .kix-cursor-caret {
-                transition: left 80ms ease-out, top 80ms ease-out !important;
+                transition: transform 80ms ease-out, left 80ms ease-out, top 80ms ease-out !important;
+            }
+
+            .kix-cursor-caret {
+                border-left-color: var(--cursor-custom-color, var(--darkreader-inline-border-left, currentColor)) !important;
+                border-left-width: 2px !important;
+                border-left-style: solid !important;
+                opacity: 1 !important;
+                visibility: visible !important;
             }
 
             .active-cell-border {
