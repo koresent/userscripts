@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.1.4
-// @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, and peer wallpaper isolation
+// @version        1.2.0
+// @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, blur, dimming, and vignette
 // @author         Koresent
 // @license        GPL-3.0
 // @icon           https://web.telegram.org/favicon.ico
@@ -84,6 +84,63 @@
     },
     set tileSize(val) {
       GM_setValue("tg_gruvbox_tile_size", val.trim() || "auto");
+    },
+
+    get blurWallpaper() {
+      return GM_getValue("tg_gruvbox_blur", false);
+    },
+    set blurWallpaper(val) {
+      GM_setValue("tg_gruvbox_blur", !!val);
+    },
+
+    get blurRadius() {
+      const val = parseInt(GM_getValue("tg_gruvbox_blur_radius", 10), 10);
+      return isNaN(val) ? 10 : Math.max(1, Math.min(val, 50));
+    },
+    set blurRadius(val) {
+      const parsed = parseInt(val, 10);
+      GM_setValue(
+        "tg_gruvbox_blur_radius",
+        isNaN(parsed) ? 10 : Math.max(1, Math.min(parsed, 50))
+      );
+    },
+
+    get dimWallpaper() {
+      return GM_getValue("tg_gruvbox_dim", false);
+    },
+    set dimWallpaper(val) {
+      GM_setValue("tg_gruvbox_dim", !!val);
+    },
+
+    get dimOpacity() {
+      const val = parseInt(GM_getValue("tg_gruvbox_dim_opacity", 40), 10);
+      return isNaN(val) ? 40 : Math.max(5, Math.min(val, 95));
+    },
+    set dimOpacity(val) {
+      const parsed = parseInt(val, 10);
+      GM_setValue(
+        "tg_gruvbox_dim_opacity",
+        isNaN(parsed) ? 40 : Math.max(5, Math.min(parsed, 95))
+      );
+    },
+
+    get vignetteWallpaper() {
+      return GM_getValue("tg_gruvbox_vignette", false);
+    },
+    set vignetteWallpaper(val) {
+      GM_setValue("tg_gruvbox_vignette", !!val);
+    },
+
+    get vignetteStrength() {
+      const val = parseInt(GM_getValue("tg_gruvbox_vignette_strength", 70), 10);
+      return isNaN(val) ? 70 : Math.max(10, Math.min(val, 100));
+    },
+    set vignetteStrength(val) {
+      const parsed = parseInt(val, 10);
+      GM_setValue(
+        "tg_gruvbox_vignette_strength",
+        isNaN(parsed) ? 70 : Math.max(10, Math.min(parsed, 100))
+      );
     },
   };
 
@@ -452,6 +509,27 @@
         inset: 0;
         z-index: 0;
         pointer-events: none;
+        overflow: hidden;
+    }
+    #gruvbox-wallpaper-img {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        will-change: filter, transform;
+        transition: filter 0.15s ease, inset 0.15s ease;
+    }
+    #gruvbox-wallpaper-dim {
+        position: absolute;
+        inset: 0;
+        background-color: #000000;
+        pointer-events: none;
+        transition: opacity 0.15s ease;
+    }
+    #gruvbox-wallpaper-vignette {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease;
     }
 
     /* Theme carousel tile */
@@ -557,6 +635,70 @@
         margin-top: -2px !important;
         display: block !important;
     }
+    .tg-gruvbox-option-sub {
+        margin-left: 26px;
+        margin-bottom: 8px;
+        transition: opacity 0.15s ease;
+    }
+    .tg-gruvbox-option-sub.disabled,
+    .tg-gruvbox-range-row.disabled {
+        opacity: 0.35;
+        pointer-events: none;
+    }
+    .tg-gruvbox-range-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-left: 26px;
+        margin-top: 2px;
+        margin-bottom: 8px;
+        transition: opacity 0.15s ease;
+    }
+    .tg-gruvbox-range {
+        flex: 1;
+        -webkit-appearance: none;
+        appearance: none;
+        height: 6px;
+        background: #1d2021;
+        border: 1px solid #3c3836;
+        border-radius: 3px;
+        outline: none;
+        cursor: pointer;
+    }
+    .tg-gruvbox-range::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #b8bb26;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+        cursor: pointer;
+        transition: transform 0.1s ease;
+    }
+    .tg-gruvbox-range::-webkit-slider-thumb:hover {
+        transform: scale(1.15);
+    }
+    .tg-gruvbox-range::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #b8bb26;
+        border: none;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+        cursor: pointer;
+        transition: transform 0.1s ease;
+    }
+    .tg-gruvbox-range::-moz-range-thumb:hover {
+        transform: scale(1.15);
+    }
+    .tg-gruvbox-range-val {
+        font-family: monospace, sans-serif;
+        font-size: 12px;
+        color: #ebdbb2;
+        min-width: 38px;
+        text-align: right;
+    }
     `;
 
   styleEl.textContent = GRUVBOX_CSS;
@@ -590,8 +732,30 @@
         document.body;
       layer = document.createElement("div");
       layer.id = "gruvbox-wallpaper-layer";
-      bgContainer.prepend(layer);
+      bgContainer.appendChild(layer);
     }
+
+    let imgDiv = layer.querySelector("#gruvbox-wallpaper-img");
+    if (!imgDiv) {
+      imgDiv = document.createElement("div");
+      imgDiv.id = "gruvbox-wallpaper-img";
+      layer.appendChild(imgDiv);
+    }
+
+    let dimDiv = layer.querySelector("#gruvbox-wallpaper-dim");
+    if (!dimDiv) {
+      dimDiv = document.createElement("div");
+      dimDiv.id = "gruvbox-wallpaper-dim";
+      layer.appendChild(dimDiv);
+    }
+
+    let vignetteDiv = layer.querySelector("#gruvbox-wallpaper-vignette");
+    if (!vignetteDiv) {
+      vignetteDiv = document.createElement("div");
+      vignetteDiv.id = "gruvbox-wallpaper-vignette";
+      layer.appendChild(vignetteDiv);
+    }
+
     return layer;
   }
 
@@ -605,23 +769,37 @@
       return;
     }
 
-    // Check whether current chat has custom peer wallpaper/theme
-    const chat = win.appImManager?.chat;
-    const peerFull = chat?.fullPeer?.();
-    const hasPeerWallpaper = !!(
-      chat?.currentWallPaper ||
-      chat?.currentTheme ||
-      peerFull?.wallpaper ||
-      peerFull?.theme ||
-      peerFull?.theme_emoticon
+    const im = win.appImManager;
+    const chat = im?.chat;
+
+    // Determine if an active chat is open
+    const hasOpenChat = !!(
+      (chat && chat.peerId && chat.peerId !== 0) ||
+      document.querySelector(".bubbles, .chat, .chatlist-chat.active") ||
+      (win.location?.hash &&
+        win.location.hash.length > 1 &&
+        !win.location.hash.startsWith("#/settings"))
     );
 
-    // Also check if Telegram renders an actual custom image wallpaper
-    const bgEl = win.appChatBackground?.element;
-    const hasCustomImageInSlot = !!(
-      bgEl &&
-      (bgEl.querySelector("img") || bgEl.querySelector(".IsImage"))
-    );
+    let hasPeerWallpaper = false;
+    let hasCustomImageInSlot = false;
+
+    if (hasOpenChat) {
+      const peerFull = chat?.fullPeer?.();
+      hasPeerWallpaper = !!(
+        chat?.currentWallPaper ||
+        chat?.currentTheme ||
+        peerFull?.wallpaper ||
+        peerFull?.theme ||
+        peerFull?.theme_emoticon
+      );
+
+      const bgEl = win.appChatBackground?.element;
+      hasCustomImageInSlot = !!(
+        bgEl &&
+        (bgEl.querySelector("img") || bgEl.querySelector(".IsImage"))
+      );
+    }
 
     if (hasPeerWallpaper || hasCustomImageInSlot) {
       // Keep peer custom wallpaper visible, hide our custom layer
@@ -629,19 +807,71 @@
     } else {
       // Apply Gruvbox custom wallpaper
       layer.style.display = "block";
-      const targetBg = `url("${CONFIG.wallpaperUrl}")`;
-      if (layer.style.backgroundImage !== targetBg) {
-        layer.style.backgroundImage = targetBg;
+      if (layer.style.backgroundImage) {
+        layer.style.backgroundImage = "";
       }
 
-      if (CONFIG.tileWallpaper) {
-        if (layer.style.backgroundRepeat !== "repeat") layer.style.backgroundRepeat = "repeat";
-        if (layer.style.backgroundPosition !== "top left") layer.style.backgroundPosition = "top left";
-        if (layer.style.backgroundSize !== CONFIG.tileSize) layer.style.backgroundSize = CONFIG.tileSize;
-      } else {
-        if (layer.style.backgroundRepeat !== "no-repeat") layer.style.backgroundRepeat = "no-repeat";
-        if (layer.style.backgroundPosition !== "center center") layer.style.backgroundPosition = "center center";
-        if (layer.style.backgroundSize !== "cover") layer.style.backgroundSize = "cover";
+      const imgDiv = layer.querySelector("#gruvbox-wallpaper-img");
+      const dimDiv = layer.querySelector("#gruvbox-wallpaper-dim");
+      const vignetteDiv = layer.querySelector("#gruvbox-wallpaper-vignette");
+
+      if (imgDiv) {
+        const targetBg = `url("${CONFIG.wallpaperUrl}")`;
+        if (imgDiv.style.backgroundImage !== targetBg) {
+          imgDiv.style.backgroundImage = targetBg;
+        }
+
+        if (CONFIG.tileWallpaper) {
+          if (imgDiv.style.backgroundRepeat !== "repeat")
+            imgDiv.style.backgroundRepeat = "repeat";
+          if (imgDiv.style.backgroundPosition !== "top left")
+            imgDiv.style.backgroundPosition = "top left";
+          if (imgDiv.style.backgroundSize !== CONFIG.tileSize)
+            imgDiv.style.backgroundSize = CONFIG.tileSize;
+        } else {
+          if (imgDiv.style.backgroundRepeat !== "no-repeat")
+            imgDiv.style.backgroundRepeat = "no-repeat";
+          if (imgDiv.style.backgroundPosition !== "center center")
+            imgDiv.style.backgroundPosition = "center center";
+          if (imgDiv.style.backgroundSize !== "cover")
+            imgDiv.style.backgroundSize = "cover";
+        }
+
+        if (CONFIG.blurWallpaper) {
+          const radius = CONFIG.blurRadius;
+          const filterVal = `blur(${radius}px)`;
+          if (imgDiv.style.filter !== filterVal) imgDiv.style.filter = filterVal;
+          const insetVal = `-${Math.max(radius * 2, 20)}px`;
+          if (imgDiv.style.inset !== insetVal) imgDiv.style.inset = insetVal;
+        } else {
+          if (imgDiv.style.filter !== "none") imgDiv.style.filter = "none";
+          if (imgDiv.style.inset !== "0px") imgDiv.style.inset = "0px";
+        }
+      }
+
+      if (dimDiv) {
+        if (CONFIG.dimWallpaper) {
+          if (dimDiv.style.display !== "block") dimDiv.style.display = "block";
+          const dimOpacity = (CONFIG.dimOpacity / 100).toString();
+          if (dimDiv.style.opacity !== dimOpacity) dimDiv.style.opacity = dimOpacity;
+        } else {
+          if (dimDiv.style.display !== "none") dimDiv.style.display = "none";
+        }
+      }
+
+      if (vignetteDiv) {
+        if (CONFIG.vignetteWallpaper) {
+          if (vignetteDiv.style.display !== "block")
+            vignetteDiv.style.display = "block";
+          const strength = (CONFIG.vignetteStrength / 100).toFixed(2);
+          const gradient = `radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 25%, rgba(0, 0, 0, ${strength}) 100%)`;
+          if (vignetteDiv.style.backgroundImage !== gradient) {
+            vignetteDiv.style.backgroundImage = gradient;
+          }
+        } else {
+          if (vignetteDiv.style.display !== "none")
+            vignetteDiv.style.display = "none";
+        }
       }
     }
   }
@@ -747,9 +977,40 @@
                 <span class="tg-gruvbox-checkbox-box"></span>
                 <span>Tile Wallpaper</span>
             </label>
+            <div id="gb-wp-tile-row" class="tg-gruvbox-option-sub ${CONFIG.tileWallpaper ? "" : "disabled"}">
+                <div style="color: #a89984; margin-bottom: 2px; font-size: 12px;">Tile Size:</div>
+                <input type="text" id="gb-wp-size" placeholder="auto, 200px, 50%..." value="${CONFIG.tileSize}">
+            </div>
 
-            <div style="color: #a89984; margin-bottom: 2px; margin-top: 6px;">Tile Size:</div>
-            <input type="text" id="gb-wp-size" placeholder="auto, 200px, 50%..." value="${CONFIG.tileSize}">
+            <label class="tg-gruvbox-checkbox-label">
+                <input type="checkbox" id="gb-wp-blur" class="tg-gruvbox-checkbox" ${CONFIG.blurWallpaper ? "checked" : ""}>
+                <span class="tg-gruvbox-checkbox-box"></span>
+                <span>Blur Wallpaper</span>
+            </label>
+            <div id="gb-wp-blur-row" class="tg-gruvbox-range-row ${CONFIG.blurWallpaper ? "" : "disabled"}">
+                <input type="range" id="gb-wp-blur-range" class="tg-gruvbox-range" min="1" max="40" value="${CONFIG.blurRadius}">
+                <span id="gb-wp-blur-val" class="tg-gruvbox-range-val">${CONFIG.blurRadius}px</span>
+            </div>
+
+            <label class="tg-gruvbox-checkbox-label">
+                <input type="checkbox" id="gb-wp-dim" class="tg-gruvbox-checkbox" ${CONFIG.dimWallpaper ? "checked" : ""}>
+                <span class="tg-gruvbox-checkbox-box"></span>
+                <span>Dim Wallpaper</span>
+            </label>
+            <div id="gb-wp-dim-row" class="tg-gruvbox-range-row ${CONFIG.dimWallpaper ? "" : "disabled"}">
+                <input type="range" id="gb-wp-dim-range" class="tg-gruvbox-range" min="5" max="95" value="${CONFIG.dimOpacity}">
+                <span id="gb-wp-dim-val" class="tg-gruvbox-range-val">${CONFIG.dimOpacity}%</span>
+            </div>
+
+            <label class="tg-gruvbox-checkbox-label">
+                <input type="checkbox" id="gb-wp-vignette" class="tg-gruvbox-checkbox" ${CONFIG.vignetteWallpaper ? "checked" : ""}>
+                <span class="tg-gruvbox-checkbox-box"></span>
+                <span>Vignette</span>
+            </label>
+            <div id="gb-wp-vignette-row" class="tg-gruvbox-range-row ${CONFIG.vignetteWallpaper ? "" : "disabled"}">
+                <input type="range" id="gb-wp-vignette-range" class="tg-gruvbox-range" min="10" max="100" value="${CONFIG.vignetteStrength}">
+                <span id="gb-wp-vignette-val" class="tg-gruvbox-range-val">${CONFIG.vignetteStrength}%</span>
+            </div>
         `;
 
     const urlInput = panel.querySelector("#gb-wp-url");
@@ -787,14 +1048,61 @@
     });
 
     const tileCheck = panel.querySelector("#gb-wp-tile");
+    const tileRow = panel.querySelector("#gb-wp-tile-row");
     tileCheck.addEventListener("change", (e) => {
       CONFIG.tileWallpaper = e.target.checked;
+      tileRow.classList.toggle("disabled", !e.target.checked);
       updateChatWallpaper();
     });
 
     const sizeInput = panel.querySelector("#gb-wp-size");
     sizeInput.addEventListener("change", (e) => {
       CONFIG.tileSize = e.target.value;
+      updateChatWallpaper();
+    });
+
+    const blurCheck = panel.querySelector("#gb-wp-blur");
+    const blurRow = panel.querySelector("#gb-wp-blur-row");
+    const blurRange = panel.querySelector("#gb-wp-blur-range");
+    const blurVal = panel.querySelector("#gb-wp-blur-val");
+    blurCheck.addEventListener("change", (e) => {
+      CONFIG.blurWallpaper = e.target.checked;
+      blurRow.classList.toggle("disabled", !e.target.checked);
+      updateChatWallpaper();
+    });
+    blurRange.addEventListener("input", (e) => {
+      CONFIG.blurRadius = e.target.value;
+      blurVal.textContent = `${e.target.value}px`;
+      updateChatWallpaper();
+    });
+
+    const dimCheck = panel.querySelector("#gb-wp-dim");
+    const dimRow = panel.querySelector("#gb-wp-dim-row");
+    const dimRange = panel.querySelector("#gb-wp-dim-range");
+    const dimVal = panel.querySelector("#gb-wp-dim-val");
+    dimCheck.addEventListener("change", (e) => {
+      CONFIG.dimWallpaper = e.target.checked;
+      dimRow.classList.toggle("disabled", !e.target.checked);
+      updateChatWallpaper();
+    });
+    dimRange.addEventListener("input", (e) => {
+      CONFIG.dimOpacity = e.target.value;
+      dimVal.textContent = `${e.target.value}%`;
+      updateChatWallpaper();
+    });
+
+    const vignetteCheck = panel.querySelector("#gb-wp-vignette");
+    const vignetteRow = panel.querySelector("#gb-wp-vignette-row");
+    const vignetteRange = panel.querySelector("#gb-wp-vignette-range");
+    const vignetteVal = panel.querySelector("#gb-wp-vignette-val");
+    vignetteCheck.addEventListener("change", (e) => {
+      CONFIG.vignetteWallpaper = e.target.checked;
+      vignetteRow.classList.toggle("disabled", !e.target.checked);
+      updateChatWallpaper();
+    });
+    vignetteRange.addEventListener("input", (e) => {
+      CONFIG.vignetteStrength = e.target.value;
+      vignetteVal.textContent = `${e.target.value}%`;
       updateChatWallpaper();
     });
 
