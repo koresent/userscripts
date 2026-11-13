@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.2.1
+// @version        1.3.1
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
@@ -22,14 +22,53 @@
 // @match          *://*.github.com/*
 // @match          *://gitlab.com/*
 // @match          *://*.gitlab.com/*
+// @match          *://codeberg.org/*
+// @match          *://*.codeberg.org/*
 // @match          *://www.google.com/*
 // @match          *://google.com/*
+// @match          *://gemini.google.com/*
+// @match          *://aistudio.google.com/*
+// @match          *://chatgpt.com/*
+// @match          *://*.chatgpt.com/*
+// @match          *://chat.openai.com/*
+// @match          *://grok.com/*
+// @match          *://*.grok.com/*
+// @match          *://claude.ai/*
+// @match          *://*.claude.ai/*
+// @match          *://perplexity.ai/*
+// @match          *://*.perplexity.ai/*
+// @match          *://deepseek.com/*
+// @match          *://*.deepseek.com/*
+// @match          *://qwen.ai/*
+// @match          *://*.qwen.ai/*
+// @match          *://qwenlm.ai/*
+// @match          *://*.qwenlm.ai/*
+// @match          *://wikipedia.org/*
+// @match          *://*.wikipedia.org/*
+// @match          *://archlinux.org/*
+// @match          *://*.archlinux.org/*
 // @match          *://www.youtube.com/*
 // @match          *://youtube.com/*
+// @match          *://music.yandex.ru/*
+// @match          *://market.yandex.ru/*
+// @match          *://avito.ru/*
+// @match          *://*.avito.ru/*
+// @match          *://aliexpress.ru/*
+// @match          *://*.aliexpress.ru/*
+// @match          *://wildberries.ru/*
+// @match          *://*.wildberries.ru/*
+// @match          *://ozon.ru/*
+// @match          *://*.ozon.ru/*
 // @match          *://discord.com/*
 // @match          *://web.telegram.org/k/*
 // @match          *://www.reddit.com/*
 // @match          *://*.reddit.com/*
+// @match          *://lan/*
+// @match          *://*.lan/*
+// @match          *://umbra.team/*
+// @match          *://*.umbra.team/*
+// @match          *://umbra.local/*
+// @match          *://*.umbra.local/*
 //
 // @run-at         document-start
 //
@@ -111,6 +150,8 @@
 
             .monaco-editor .cursors-layer .cursor,
             .cm-cursorLayer .cm-cursor,
+            .CodeMirror .CodeMirror-cursor,
+            .ace_editor .ace_cursor,
             .kix-cursor {
                 opacity: 0 !important;
             }
@@ -150,25 +191,37 @@
     }
 
     function initCanvas() {
-        if (canvas) return;
+        if (!canvas) {
+            canvas = document.createElement('canvas');
+            canvas.id = 'cursor-glide-canvas';
+            canvas.style.cssText = `
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                pointer-events: none !important;
+                z-index: 2147483647 !important;
+                display: block !important;
+            `;
+            ctx = canvas.getContext('2d');
+            window.addEventListener('resize', resizeCanvas, { passive: true });
+        }
+        ensureCanvas();
+    }
 
-        canvas = document.createElement('canvas');
-        canvas.id = 'cursor-glide-canvas';
-        canvas.style.cssText = `
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            pointer-events: none !important;
-            z-index: 2147483647 !important;
-            display: block !important;
-        `;
-        ctx = canvas.getContext('2d');
-        resizeCanvas();
-
-        window.addEventListener('resize', resizeCanvas, { passive: true });
-        (document.body || document.documentElement).appendChild(canvas);
+    function ensureCanvas() {
+        if (!canvas) {
+            initCanvas();
+            return;
+        }
+        if (!canvas.isConnected) {
+            const root = document.documentElement || document.body;
+            if (root) {
+                root.appendChild(canvas);
+                resizeCanvas();
+            }
+        }
     }
 
     function resizeCanvas() {
@@ -213,7 +266,12 @@
             `;
             mirrorMarker = document.createElement('span');
             mirrorMarker.textContent = '|';
-            (document.body || document.documentElement).appendChild(mirrorDiv);
+        }
+        if (!mirrorDiv.isConnected) {
+            const root = document.documentElement || document.body;
+            if (root) {
+                root.appendChild(mirrorDiv);
+            }
         }
         return mirrorDiv;
     }
@@ -282,6 +340,19 @@
             : range.startContainer.parentElement;
 
         if (container) {
+            const br = container.querySelector('br');
+            if (br) {
+                const bRect = br.getBoundingClientRect();
+                if (bRect.height > 0 && bRect.top > 0) {
+                    return {
+                        x: bRect.left,
+                        y: bRect.top,
+                        w: CONFIG.cursorWidth,
+                        h: bRect.height
+                    };
+                }
+            }
+
             const cRect = container.getBoundingClientRect();
             const cStyle = window.getComputedStyle(container);
             const lh = parseFloat(cStyle.lineHeight) || (parseFloat(cStyle.fontSize) * 1.2) || 18;
@@ -289,7 +360,7 @@
                 x: cRect.left + (parseFloat(cStyle.paddingLeft) || 0),
                 y: cRect.top + (parseFloat(cStyle.paddingTop) || 0),
                 w: CONFIG.cursorWidth,
-                h: lh
+                h: Math.min(cRect.height || lh, lh)
             };
         }
 
@@ -319,6 +390,32 @@
                     y: mRect.top,
                     w: Math.max(mRect.width, CONFIG.cursorWidth),
                     h: mRect.height
+                };
+            }
+        }
+
+        const cmCursor = document.querySelector('.CodeMirror-focused .CodeMirror-cursor, .CodeMirror .CodeMirror-cursor, .cm-focused .cm-cursorLayer .cm-cursor');
+        if (cmCursor) {
+            const cmRect = cmCursor.getBoundingClientRect();
+            if (cmRect.height > 0 && cmRect.top > 0) {
+                return {
+                    x: cmRect.left,
+                    y: cmRect.top,
+                    w: Math.max(cmRect.width, CONFIG.cursorWidth),
+                    h: cmRect.height
+                };
+            }
+        }
+
+        const aceCursor = document.querySelector('.ace_editor.ace_focus .ace_cursor, .ace_editor .ace_cursor');
+        if (aceCursor) {
+            const aRect = aceCursor.getBoundingClientRect();
+            if (aRect.height > 0 && aRect.top > 0) {
+                return {
+                    x: aRect.left,
+                    y: aRect.top,
+                    w: Math.max(aRect.width, CONFIG.cursorWidth),
+                    h: aRect.height
                 };
             }
         }
@@ -535,6 +632,7 @@
             scheduled = true;
             requestAnimationFrame(() => {
                 scheduled = false;
+                ensureCanvas();
                 tryAttachDocsObserver(scheduleUpdate);
                 updateCursorTarget();
             });
