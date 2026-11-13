@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Gruvbox Dark
 // @namespace      github.com/koresent/userscripts
-// @version        1.2.0
+// @version        1.2.1
 // @description    Gruvbox Dark theme for Telegram Web K with native carousel tile, wallpaper tiling, blur, dimming, and vignette
 // @author         Koresent
 // @license        GPL-3.0
@@ -726,34 +726,29 @@
   function ensureWallpaperLayer() {
     let layer = document.getElementById("gruvbox-wallpaper-layer");
     if (!layer) {
-      const bgContainer =
-        win.appChatBackground?.element ||
-        document.querySelector(".chat-background") ||
-        document.body;
       layer = document.createElement("div");
       layer.id = "gruvbox-wallpaper-layer";
-      bgContainer.appendChild(layer);
-    }
 
-    let imgDiv = layer.querySelector("#gruvbox-wallpaper-img");
-    if (!imgDiv) {
-      imgDiv = document.createElement("div");
+      const imgDiv = document.createElement("div");
       imgDiv.id = "gruvbox-wallpaper-img";
       layer.appendChild(imgDiv);
-    }
 
-    let dimDiv = layer.querySelector("#gruvbox-wallpaper-dim");
-    if (!dimDiv) {
-      dimDiv = document.createElement("div");
+      const dimDiv = document.createElement("div");
       dimDiv.id = "gruvbox-wallpaper-dim";
       layer.appendChild(dimDiv);
-    }
 
-    let vignetteDiv = layer.querySelector("#gruvbox-wallpaper-vignette");
-    if (!vignetteDiv) {
-      vignetteDiv = document.createElement("div");
+      const vignetteDiv = document.createElement("div");
       vignetteDiv.id = "gruvbox-wallpaper-vignette";
       layer.appendChild(vignetteDiv);
+
+      const target = document.body || document.documentElement;
+      if (target) {
+        target.prepend(layer);
+      }
+    } else {
+      if (document.body && layer.parentElement !== document.body) {
+        document.body.prepend(layer);
+      }
     }
 
     return layer;
@@ -761,40 +756,50 @@
 
   function updateChatWallpaper() {
     const layer = ensureWallpaperLayer();
-    if (!layer) return;
+    const bgEl = win.appChatBackground?.element;
 
     // If theme is disabled or no custom wallpaper URL set, leave default untouched
     if (!CONFIG.isGruvbox || !CONFIG.wallpaperUrl) {
-      layer.style.display = "none";
+      if (layer) layer.style.display = "none";
+      if (bgEl && bgEl.style.visibility === "hidden") {
+        bgEl.style.visibility = "";
+      }
       return;
     }
 
     const im = win.appImManager;
     const chat = im?.chat;
 
-    // Determine if an active chat is open
+    // Determine if an active chat is open (avoid matching inactive .chat shell on main page)
     const hasOpenChat = !!(
-      (chat && chat.peerId && chat.peerId !== 0) ||
-      document.querySelector(".bubbles, .chat, .chatlist-chat.active") ||
-      (win.location?.hash &&
-        win.location.hash.length > 1 &&
-        !win.location.hash.startsWith("#/settings"))
+      chat &&
+      chat.peerId &&
+      chat.peerId !== 0 &&
+      (document.querySelector(".chatlist-chat.active") ||
+        document.querySelector(".bubbles") ||
+        (win.location?.hash &&
+          win.location.hash.length > 1 &&
+          !win.location.hash.startsWith("#/settings")))
     );
 
     let hasPeerWallpaper = false;
     let hasCustomImageInSlot = false;
 
     if (hasOpenChat) {
-      const peerFull = chat?.fullPeer?.();
-      hasPeerWallpaper = !!(
-        chat?.currentWallPaper ||
-        chat?.currentTheme ||
-        peerFull?.wallpaper ||
-        peerFull?.theme ||
-        peerFull?.theme_emoticon
-      );
+      try {
+        const peerFull =
+          typeof chat.fullPeer === "function" ? chat.fullPeer() : null;
+        hasPeerWallpaper = !!(
+          chat.currentWallPaper ||
+          chat.currentTheme ||
+          peerFull?.wallpaper ||
+          peerFull?.theme ||
+          peerFull?.theme_emoticon
+        );
+      } catch (e) {
+        hasPeerWallpaper = false;
+      }
 
-      const bgEl = win.appChatBackground?.element;
       hasCustomImageInSlot = !!(
         bgEl &&
         (bgEl.querySelector("img") || bgEl.querySelector(".IsImage"))
@@ -802,10 +807,18 @@
     }
 
     if (hasPeerWallpaper || hasCustomImageInSlot) {
-      // Keep peer custom wallpaper visible, hide our custom layer
-      layer.style.display = "none";
+      // Chat has its own custom wallpaper/theme -> show Telegram's background, hide Gruvbox layer
+      if (layer) layer.style.display = "none";
+      if (bgEl && bgEl.style.visibility === "hidden") {
+        bgEl.style.visibility = "";
+      }
     } else {
-      // Apply Gruvbox custom wallpaper
+      // Main page or chat without custom wallpaper -> show Gruvbox wallpaper, hide Telegram default background
+      if (bgEl && bgEl.style.visibility !== "hidden") {
+        bgEl.style.visibility = "hidden";
+      }
+
+      if (!layer) return;
       layer.style.display = "block";
       if (layer.style.backgroundImage) {
         layer.style.backgroundImage = "";
