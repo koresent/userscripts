@@ -178,6 +178,46 @@
   let hintContainer = null;
   let lastFocusedInputIndex = -1;
 
+  const CODE_TO_CHAR = {
+    KeyA: 'a', KeyB: 'b', KeyC: 'c', KeyD: 'd', KeyE: 'e', KeyF: 'f',
+    KeyG: 'g', KeyH: 'h', KeyI: 'i', KeyJ: 'j', KeyK: 'k', KeyL: 'l',
+    KeyM: 'm', KeyN: 'n', KeyO: 'o', KeyP: 'p', KeyQ: 'q', KeyR: 'r',
+    KeyS: 's', KeyT: 't', KeyU: 'u', KeyV: 'v', KeyW: 'w', KeyX: 'x',
+    KeyY: 'y', KeyZ: 'z',
+    Digit0: '0', Digit1: '1', Digit2: '2', Digit3: '3', Digit4: '4',
+    Digit5: '5', Digit6: '6', Digit7: '7', Digit8: '8', Digit9: '9',
+    BracketLeft: '[', BracketRight: ']',
+    Semicolon: ';', Quote: "'", Backquote: '`',
+    Comma: ',', Period: '.', Slash: '/',
+    Minus: '-', Equal: '=', Backslash: '\\'
+  };
+
+  const SHIFT_SYMBOLS = {
+    '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+    '-': '_', '=': '+', '[': '{', ']': '}', ';': ':', "'": '"', ',': '<', '.': '>', '/': '?',
+    '`': '~', '\\': '|'
+  };
+
+  function normalizeEventKey(e) {
+    if (!e) return '';
+    if (e.code === 'Escape') return 'Escape';
+    if (e.code === 'Backspace') return 'Backspace';
+    if (e.code === 'Enter') return 'Enter';
+    if (e.code === 'Space') return e.shiftKey ? 'Shift+Space' : 'Space';
+
+    if (e.code && e.code.startsWith('Key')) {
+      const letter = e.code.slice(3).toLowerCase();
+      return e.shiftKey ? letter.toUpperCase() : letter;
+    }
+
+    if (e.code && CODE_TO_CHAR[e.code]) {
+      const ch = CODE_TO_CHAR[e.code];
+      return e.shiftKey ? (SHIFT_SYMBOLS[ch] || ch) : ch;
+    }
+
+    return e.key;
+  }
+
   window.addEventListener('keydown', handleKeyDown, true);
 
   function isEditableElement(el) {
@@ -200,7 +240,9 @@
       return;
     }
 
-    if (event.key === 'Escape') {
+    const keyName = normalizeEventKey(event);
+
+    if (keyName === 'Escape') {
       if (activeConfig.focus.blurOnEscape && isEditableElement(target)) {
         target.blur();
         event.stopPropagation();
@@ -225,10 +267,6 @@
 
     const { excluded, disabledKeys } = isUrlExcluded();
     if (excluded) return;
-
-    let keyName = event.key;
-    if (event.shiftKey && keyName === ' ') keyName = 'Shift+Space';
-    else if (keyName === ' ') keyName = 'Space';
 
     clearTimeout(keyBufferTimer);
     keyBuffer += keyName;
@@ -460,10 +498,11 @@
         background: #fabd2f; color: #1d2021;
         font-family: 'Maple Mono NF', 'JetBrains Mono', 'Fira Code', monospace;
         font-size: ${activeConfig.hints.fontSize}px;
-        font-weight: 700; line-height: 1; padding: 2px 4px;
-        border: 1px solid #d79921; border-radius: 3px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        font-weight: 700; line-height: 1; padding: 3px 6px;
+        border: 1px solid #d79921; border-radius: 6px;
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.25);
         z-index: 2147483647; pointer-events: none;
+        letter-spacing: 0.5px; user-select: none;
       `;
       hintContainer.appendChild(marker);
       return { element: item.element, label, rawLabel: labels[idx], marker };
@@ -473,15 +512,18 @@
   }
 
   function handleHintModeKey(event) {
-    event.preventDefault();
-    event.stopPropagation();
+    const normKey = normalizeEventKey(event);
 
-    if (event.key === 'Escape') {
+    if (normKey === 'Escape' || event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
       exitHintMode();
       return;
     }
 
-    if (event.key === 'Backspace') {
+    if (normKey === 'Backspace' || event.key === 'Backspace') {
+      event.preventDefault();
+      event.stopPropagation();
       if (hintKeystrokes.length > 0) {
         hintKeystrokes = hintKeystrokes.slice(0, -1);
         updateHintMarkers();
@@ -491,11 +533,13 @@
       return;
     }
 
-    const char = event.key.toLowerCase();
+    const char = normKey.toLowerCase();
     if (!activeConfig.hints.characters.includes(char)) {
       return;
     }
 
+    event.preventDefault();
+    event.stopPropagation();
     hintKeystrokes += char;
     updateHintMarkers();
   }
@@ -509,8 +553,9 @@
     }
 
     if (matches.length === 1 && activeConfig.hints.autoActivateSingle) {
-      triggerHintAction(matches[0].element);
+      const targetElement = matches[0].element;
       exitHintMode();
+      triggerHintAction(targetElement);
       return;
     }
 
@@ -519,7 +564,7 @@
         m.marker.style.display = 'block';
         const matchedPart = activeConfig.hints.uppercase ? hintKeystrokes.toUpperCase() : hintKeystrokes;
         const restPart = (activeConfig.hints.uppercase ? m.rawLabel.toUpperCase() : m.rawLabel).slice(matchedPart.length);
-        m.marker.innerHTML = `<span style="color: #fb4934;">${matchedPart}</span>${restPart}`;
+        m.marker.innerHTML = `<span style="color: #cc241d; font-weight: 800;">${matchedPart}</span>${restPart}`;
       } else {
         m.marker.style.display = 'none';
       }
@@ -529,33 +574,40 @@
   function triggerHintAction(element) {
     if (activeConfig.hints.highlightTarget) {
       const origOutline = element.style.outline;
+      const origOffset = element.style.outlineOffset;
       element.style.outline = '2px solid #fabd2f';
-      setTimeout(() => { element.style.outline = origOutline; }, 350);
+      element.style.outlineOffset = '2px';
+      setTimeout(() => {
+        element.style.outline = origOutline;
+        element.style.outlineOffset = origOffset;
+      }, 350);
     }
+
+    const link = element.closest('a') || (element.tagName === 'A' ? element : null);
 
     switch (activeHintAction) {
       case 'currentTab':
         simulateClick(element);
         break;
       case 'newTab':
-        if (element.tagName === 'A' && element.href) {
-          GM_openInTab(element.href, { active: !activeConfig.hints.openInBackground });
+        if (link && link.href && !link.href.startsWith('javascript:')) {
+          GM_openInTab(link.href, { active: !activeConfig.hints.openInBackground });
         } else {
           simulateClick(element, { ctrlKey: true, metaKey: true });
         }
         break;
       case 'copyUrl':
-        if (element.tagName === 'A' && element.href) {
-          GM_setClipboard(element.href);
+        if (link && link.href) {
+          GM_setClipboard(link.href);
           showToast('Link URL copied');
         } else {
           showToast('Target element is not a link');
         }
         break;
       case 'download':
-        if (element.tagName === 'A' && element.href) {
+        if (link && link.href) {
           const a = document.createElement('a');
-          a.href = element.href;
+          a.href = link.href;
           a.download = '';
           a.click();
         } else {
@@ -567,10 +619,36 @@
 
   function simulateClick(element, modifiers = {}) {
     element.focus();
-    const eventInit = Object.assign({ bubbles: true, cancelable: true, view: window }, modifiers);
+    const link = element.closest('a') || (element.tagName === 'A' ? element : null);
+
+    const eventInit = Object.assign({
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window
+    }, modifiers);
+
+    element.dispatchEvent(new PointerEvent('pointerdown', eventInit));
     element.dispatchEvent(new MouseEvent('mousedown', eventInit));
+    element.dispatchEvent(new PointerEvent('pointerup', eventInit));
     element.dispatchEvent(new MouseEvent('mouseup', eventInit));
-    element.dispatchEvent(new MouseEvent('click', eventInit));
+    const clickDispatched = element.dispatchEvent(new MouseEvent('click', eventInit));
+
+    if (typeof element.click === 'function') {
+      element.click();
+    }
+
+    if (link && link !== element && typeof link.click === 'function') {
+      link.click();
+    }
+
+    if (clickDispatched && link && link.href && !link.href.startsWith('javascript:') && !link.href.startsWith('#')) {
+      if (link.target === '_blank') {
+        GM_openInTab(link.href, { active: true });
+      } else {
+        window.location.assign(link.href);
+      }
+    }
   }
 
   function exitHintMode() {
@@ -793,14 +871,11 @@
           window.removeEventListener('keydown', listener, true);
           badge.classList.remove('recording');
 
-          if (e.key === 'Escape') {
+          const k = normalizeEventKey(e);
+          if (k === 'Escape') {
             badge.textContent = keyMap[item.key] || '<none>';
             return;
           }
-
-          let k = e.key;
-          if (e.shiftKey && k === ' ') k = 'Shift+Space';
-          else if (k === ' ') k = 'Space';
 
           keyMap[item.key] = k;
           badge.textContent = k;
