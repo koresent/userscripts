@@ -74,7 +74,7 @@
       uppercase: true,
       autoActivateSingle: true,
       highlightTarget: true,
-      openInBackground: true
+      openInBackground: false
     },
     focus: {
       preventAutofocus: false,
@@ -495,12 +495,12 @@
         all: initial; position: fixed;
         left: ${Math.max(0, Math.floor(item.rect.left))}px;
         top: ${Math.max(0, Math.floor(item.rect.top))}px;
-        background: #fabd2f; color: #1d2021;
+        background: #32302f; color: #b8bb26;
         font-family: 'Maple Mono NF', 'JetBrains Mono', 'Fira Code', monospace;
         font-size: ${activeConfig.hints.fontSize}px;
         font-weight: 700; line-height: 1; padding: 3px 6px;
-        border: 1px solid #d79921; border-radius: 6px;
-        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.25);
+        border: 1px solid #504945; border-radius: 6px;
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.3);
         z-index: 2147483647; pointer-events: none;
         letter-spacing: 0.5px; user-select: none;
       `;
@@ -564,7 +564,7 @@
         m.marker.style.display = 'block';
         const matchedPart = activeConfig.hints.uppercase ? hintKeystrokes.toUpperCase() : hintKeystrokes;
         const restPart = (activeConfig.hints.uppercase ? m.rawLabel.toUpperCase() : m.rawLabel).slice(matchedPart.length);
-        m.marker.innerHTML = `<span style="color: #cc241d; font-weight: 800;">${matchedPart}</span>${restPart}`;
+        m.marker.innerHTML = `<span style="color: #fabd2f; font-weight: 800;">${matchedPart}</span>${restPart}`;
       } else {
         m.marker.style.display = 'none';
       }
@@ -575,7 +575,7 @@
     if (activeConfig.hints.highlightTarget) {
       const origOutline = element.style.outline;
       const origOffset = element.style.outlineOffset;
-      element.style.outline = '2px solid #fabd2f';
+      element.style.outline = '2px solid #b8bb26';
       element.style.outlineOffset = '2px';
       setTimeout(() => {
         element.style.outline = origOutline;
@@ -618,36 +618,68 @@
   }
 
   function simulateClick(element, modifiers = {}) {
-    element.focus();
     const link = element.closest('a') || (element.tagName === 'A' ? element : null);
 
-    const eventInit = Object.assign({
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      view: window
-    }, modifiers);
+    const rect = element.getBoundingClientRect();
+    const cx = Math.floor(rect.left + Math.max(1, rect.width / 2));
+    const cy = Math.floor(rect.top + Math.max(1, rect.height / 2));
+    const centerEl = (cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight)
+      ? document.elementFromPoint(cx, cy)
+      : element;
+    const target = (centerEl && (element.contains(centerEl) || centerEl.contains(element)))
+      ? centerEl
+      : element;
 
-    element.dispatchEvent(new PointerEvent('pointerdown', eventInit));
-    element.dispatchEvent(new MouseEvent('mousedown', eventInit));
-    element.dispatchEvent(new PointerEvent('pointerup', eventInit));
-    element.dispatchEvent(new MouseEvent('mouseup', eventInit));
-    const clickDispatched = element.dispatchEvent(new MouseEvent('click', eventInit));
+    try { target.focus(); } catch (_) {}
 
-    if (typeof element.click === 'function') {
-      element.click();
+    function dispatch(el, type) {
+      try {
+        const init = Object.assign({
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: cx,
+          clientY: cy
+        }, modifiers);
+        if (type.startsWith('pointer') && typeof PointerEvent === 'function') {
+          el.dispatchEvent(new PointerEvent(type, init));
+        } else {
+          el.dispatchEvent(new MouseEvent(type, init));
+        }
+      } catch (_) {}
     }
 
-    if (link && link !== element && typeof link.click === 'function') {
-      link.click();
-    }
+    dispatch(target, 'pointerover');
+    dispatch(target, 'mouseover');
+    dispatch(target, 'pointerdown');
+    dispatch(target, 'mousedown');
+    dispatch(target, 'pointerup');
+    dispatch(target, 'mouseup');
+    dispatch(target, 'click');
 
-    if (clickDispatched && link && link.href && !link.href.startsWith('javascript:') && !link.href.startsWith('#')) {
-      if (link.target === '_blank') {
-        GM_openInTab(link.href, { active: true });
-      } else {
-        window.location.assign(link.href);
+    try {
+      if (typeof target.click === 'function') {
+        target.click();
       }
+    } catch (_) {}
+
+    try {
+      if (link && link !== target && typeof link.click === 'function') {
+        link.click();
+      }
+    } catch (_) {}
+
+    if (link && link.href && !link.href.startsWith('javascript:') && !link.href.startsWith('#')) {
+      const origUrl = window.location.href;
+      setTimeout(() => {
+        if (window.location.href === origUrl) {
+          if (link.target === '_blank') {
+            window.open(link.href, '_blank');
+          } else {
+            window.location.href = link.href;
+          }
+        }
+      }, 50);
     }
   }
 
