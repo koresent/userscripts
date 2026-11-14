@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] No Stories
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
+// @version        1.0.1
 // @description    Completely removes stories from Telegram Web K interface
 // @author         Koresent
 // @license        GPL-3.0
@@ -211,12 +211,39 @@
     });
   }
 
+  function isStoryTrigger(el) {
+    if (!el || typeof el.closest !== "function") return null;
+
+    if (el.closest("a[href], input, textarea, select")) return null;
+
+    const mention = el.closest(".bubble-story-mention-wrapper");
+    if (mention) return mention;
+
+    if (el.closest(".bubbles-scrollable")) return null;
+
+    const storyComponent = el.closest(
+      ".stories-list, .avatar-stories-svg, .avatar-stories-simple, .profile-story-preview, [class*='_ViewerStory_']"
+    );
+    if (storyComponent) return storyComponent;
+
+    const labeled = el.closest("[aria-label]");
+    if (labeled && !labeled.closest(".bubbles-scrollable")) {
+      const label = labeled.getAttribute("aria-label") || "";
+      const isHistory = /histor|истор.*(сообщ|чат|поиск|звон)|очистить/i.test(label);
+      if (!isHistory) {
+        if (/\bstor(y|ies)\b/i.test(label) || /(?:^|[^а-яёa-z])истори[ияю](?:$|[^а-яёa-z])/i.test(label)) {
+          return labeled;
+        }
+      }
+    }
+
+    return null;
+  }
+
   document.addEventListener(
     "click",
     (e) => {
-      const trigger = e.target.closest(
-        '.stories-list, .avatar-stories-svg, .avatar-stories-simple, .profile-story-preview, .bubble-story-mention-wrapper, [aria-label*="STORY" i], [aria-label*="ИСТОРИ" i]'
-      );
+      const trigger = isStoryTrigger(e.target);
       if (trigger) {
         e.stopPropagation();
         e.preventDefault();
