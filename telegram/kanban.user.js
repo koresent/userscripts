@@ -55,6 +55,16 @@
     image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`
   };
 
+  function normalizePeerId(id) {
+    if (!id) return null;
+    let str = String(id).trim();
+    if (str.startsWith('-100')) {
+      str = '-' + str.slice(4);
+    }
+    const num = Number(str);
+    return Number.isFinite(num) ? num : null;
+  }
+
   function parseBoardTarget(input) {
     if (!input) return null;
     const str = String(input).trim();
@@ -68,7 +78,7 @@
     }
 
     // Raw format: -100...:topic, -..., or bare peerId
-    const matchRaw = str.match(/^(-?\d+)(?:[:_/](\d+))?$/);
+    const matchRaw = str.match(/(-100\d+|\b-?\d{7,14}\b)(?:[:_/](\d+))?/);
     if (matchRaw) {
       let peerStr = matchRaw[1];
       if (peerStr.startsWith('-100')) {
@@ -135,6 +145,7 @@
     activeInlineCol: null,
     activeMenuColId: null,
     isProcessingOutbox: false,
+    isSyncingRegistry: false,
     modalDescTab: 'write'
   };
 
@@ -356,6 +367,20 @@
     return `${body}\n\n---\n<!--kanban:${jsonStr}-->`;
   }
 
+  function ensureChatStub(peerId) {
+    if (!peerId || peerId > 0) return;
+    const chatId = Math.abs(peerId);
+    const cm = win.rootScope?.managers?.appChatsManager;
+    if (cm && !cm.getChat(chatId)) {
+      cm.chats[chatId] = {
+        id: chatId,
+        pFlags: {},
+        admin_rights: { pFlags: {} },
+        _: 'channel'
+      };
+    }
+  }
+
   const api = {
     getManagers() {
       const mm = win.rootScope?.managers?.appMessagesManager;
@@ -391,7 +416,14 @@
               const match = raw.message.match(KANBAN_BOARDS_REGEX);
               const parsed = JSON.parse(match[1]);
               if (Array.isArray(parsed) && parsed.length > 0) {
-                foundBoards = parsed;
+                foundBoards = parsed
+                  .map((b) => ({
+                    id: b.id || 'board_' + (b.topicId ? `${b.peerId}_${b.topicId}` : b.peerId),
+                    peerId: normalizePeerId(b.peerId),
+                    topicId: b.topicId ? Number(b.topicId) : null,
+                    title: b.title || null
+                  }))
+                  .filter((b) => b.peerId !== null);
               }
             } catch (_) {}
             break;
@@ -510,10 +542,59 @@
       }
     },
 
+    async syncBoardsRegistryToSavedMessages(boards = state.boards) {
+      const { mm, apiProxy } = this.getManagers();
+      if (!mm || !state.myId) return;
+
+      state.isSyncingRegistry = true;
+      try {
+        const payload = boards.map((b) => ({
+          id: b.id,
+          peerId: b.peerId,
+          topicId: b.topicId || null,
+          title: b.title || null
+        }));
+
+        const linksList = boards
+          .map((b) => {
+            const rawId = Math.abs(b.peerId);
+            const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
+            return `• ${b.title || 'Kanban'}: ${link}`;
+          })
+          .join('\n');
+
+        const text = `📋 Telegram Kanban Boards Registry\nThis message maintains your active Kanban boards and topics.\n\n${linksList}\n\n---\n<!--kanban-boards:${JSON.stringify(payload)}-->`;
+
+        let msgToEdit = null;
+        if (state.boardsRegistryMid && apiProxy) {
+          msgToEdit = apiProxy.getMessageByPeer(state.myId, state.boardsRegistryMid);
+        }
+
+        if (msgToEdit) {
+          await mm.editMessage(msgToEdit, text);
+        } else {
+          const sent = await mm.sendText({
+            peerId: state.myId,
+            text: text
+          });
+          if (sent?.message) {
+            state.boardsRegistryMid = sent.message.mid || sent.message.id;
+          }
+        }
+      } catch (err) {
+        console.warn('[Kanban] Sync boards registry error:', err);
+      } finally {
+        setTimeout(() => {
+          state.isSyncingRegistry = false;
+        }, 1000);
+      }
+    },
+
     async loadBoardConfig(peerId, topicId) {
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !apiProxy || !peerId) return;
 
+      ensureChatStub(peerId);
       try {
         const pinned = await mm.getPinnedMessage(peerId, topicId || undefined);
         let configMsg = null;
@@ -547,6 +628,7 @@
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !state.peerId) return;
 
+      ensureChatStub(state.peerId);
       const payload = {
         columns: state.columns,
         priorities: state.priorities,
@@ -584,6 +666,7 @@
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !apiProxy || !peerId) return;
 
+      ensureChatStub(peerId);
       state.isLoading = true;
       renderKanbanView();
 
@@ -663,6 +746,7 @@
       const { mm } = this.getManagers();
       if (!mm || !state.peerId) return;
 
+      ensureChatStub(state.peerId);
       const colTasks = Array.from(state.tasks.values())
         .filter((t) => t.col === col)
         .sort((a, b) => a.pos - b.pos);
@@ -749,6 +833,7 @@
       const { mm } = this.getManagers();
       if (!mm) return;
 
+      ensureChatStub(state.peerId);
       const title = newTitle !== undefined ? newTitle : task.title;
       const desc = newDescription !== undefined ? newDescription : task.description;
       const meta = {
@@ -1622,9 +1707,15 @@
     }
 
     if (!Array.isArray(state.boards) || state.boards.length === 0) {
-      group.innerHTML = '';
+      if (group.innerHTML !== '') group.innerHTML = '';
       return;
     }
+
+    const renderedKey = state.boards.map((b) => `${b.id}:${b.title}`).join('|') + `|active:${state.activeBoardId}|isKanban:${state.isKanbanActive}`;
+    if (group.dataset.renderedKey === renderedKey) {
+      return;
+    }
+    group.dataset.renderedKey = renderedKey;
 
     const tabsHtml = state.boards
       .map((b) => {
@@ -2292,12 +2383,26 @@
     modalBackdrop.id = 'kanban-active-modal';
 
     modalBackdrop.innerHTML = `
-      <div class="kanban-modal" style="width:520px;" onclick="event.stopPropagation()">
+      <div class="kanban-modal" style="width:620px;" onclick="event.stopPropagation()">
         <div class="kanban-modal-header">
-          <span>Board Settings</span>
+          <span>Boards & Settings</span>
           <button class="kanban-modal-close" id="settings-close-btn">${ICONS.close}</button>
         </div>
         <div class="kanban-modal-body">
+          <div class="kanban-form-group">
+            <label class="kanban-form-label">Active Kanban Boards</label>
+            <div class="kanban-settings-boards-list" id="settings-boards-list"></div>
+          </div>
+
+          <div class="kanban-form-group" style="padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid var(--border-color, rgba(255,255,255,0.06));">
+            <label class="kanban-form-label" style="margin-bottom:6px;">Add Board by Link / ID</label>
+            <div style="display:flex;gap:8px;">
+              <input type="text" class="kanban-form-input" id="settings-new-board-link" placeholder="e.g. https://t.me/c/2482353775/4170" style="flex:2;">
+              <input type="text" class="kanban-form-input" id="settings-new-board-name" placeholder="Board Name (optional)" style="flex:1;">
+              <button class="kanban-btn" id="settings-add-board-btn" style="flex-shrink:0;">${ICONS.plus} Add</button>
+            </div>
+          </div>
+
           <div class="kanban-form-group">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <label class="kanban-form-label">Custom Priorities</label>
@@ -2318,6 +2423,104 @@
     modalBackdrop.onclick = closeActiveModal;
     modalBackdrop.querySelector('#settings-close-btn').onclick = closeActiveModal;
     modalBackdrop.querySelector('#settings-save-btn').onclick = closeActiveModal;
+
+    function renderBoardsList() {
+      const listEl = modalBackdrop.querySelector('#settings-boards-list');
+      if (!listEl) return;
+
+      listEl.innerHTML = state.boards
+        .map((b) => {
+          const rawId = Math.abs(b.peerId);
+          const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
+          const isCurrent = b.id === state.activeBoardId;
+          return `
+            <div class="kanban-settings-board-row">
+              <div style="display:flex;flex-direction:column;gap:2px;">
+                <div style="font-weight:600;font-size:13.5px;color:var(--text-color, #ebdbb2);">
+                  ${escapeHtml(b.title || 'Kanban')}
+                  ${isCurrent ? `<span style="font-size:11px;color:var(--accent-color, #7daea3);margin-left:6px;">(Active)</span>` : ''}
+                </div>
+                <div style="font-size:11px;color:var(--secondary-text-color, #a89984);">${escapeHtml(link)}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                ${
+                  !isCurrent
+                    ? `<button class="kanban-btn kanban-btn-secondary" style="padding:2px 8px;font-size:11px;height:26px;" data-switch-board="${b.id}">Switch</button>`
+                    : ''
+                }
+                ${
+                  state.boards.length > 1
+                    ? `<button class="kanban-btn kanban-btn-danger" style="padding:2px 8px;font-size:11px;height:26px;" data-del-board="${b.id}">${ICONS.trash}</button>`
+                    : ''
+                }
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+
+      listEl.querySelectorAll('[data-switch-board]').forEach((btn) => {
+        btn.onclick = async () => {
+          const bId = btn.getAttribute('data-switch-board');
+          await api.selectBoard(bId);
+          renderBoardsList();
+          renderKanbanView();
+        };
+      });
+
+      listEl.querySelectorAll('[data-del-board]').forEach((btn) => {
+        btn.onclick = async () => {
+          const bId = btn.getAttribute('data-del-board');
+          if (confirm('Remove this board from your registry?')) {
+            state.boards = state.boards.filter((b) => b.id !== bId);
+            await api.syncBoardsRegistryToSavedMessages();
+            if (state.activeBoardId === bId && state.boards.length > 0) {
+              await api.selectBoard(state.boards[0].id);
+            }
+            renderBoardsList();
+            renderSidebarTabs();
+            renderKanbanView();
+          }
+        };
+      });
+    }
+
+    renderBoardsList();
+
+    const addBoardBtn = modalBackdrop.querySelector('#settings-add-board-btn');
+    const newBoardLinkInput = modalBackdrop.querySelector('#settings-new-board-link');
+    const newBoardNameInput = modalBackdrop.querySelector('#settings-new-board-name');
+
+    addBoardBtn.onclick = async () => {
+      const linkVal = newBoardLinkInput.value.trim();
+      const customName = newBoardNameInput.value.trim();
+      if (!linkVal) return;
+
+      const target = parseBoardTarget(linkVal);
+      if (!target) {
+        alert('Invalid Telegram group/topic link or ID format.\nExample: https://t.me/c/2482353775/4170');
+        return;
+      }
+
+      const boardId = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
+      const title = customName || (await api.resolveBoardTitle(target.peerId, target.topicId));
+
+      state.boards.push({
+        id: boardId,
+        peerId: target.peerId,
+        topicId: target.topicId,
+        title: title
+      });
+
+      await api.syncBoardsRegistryToSavedMessages();
+      await api.selectBoard(boardId);
+
+      newBoardLinkInput.value = '';
+      newBoardNameInput.value = '';
+      renderBoardsList();
+      renderSidebarTabs();
+      renderKanbanView();
+    };
 
     function renderPrioritiesList() {
       const priosList = modalBackdrop.querySelector('#settings-priorities-list');
@@ -2390,10 +2593,14 @@
     const rootScope = win.rootScope;
     if (!rootScope || !rootScope.addEventListener) return;
 
+    let registryDebounce = null;
+
     rootScope.addEventListener('message_edit', (e) => {
       const detail = e.detail || e;
-      if (detail?.peerId === state.myId) {
-        api.loadBoardsRegistry();
+      if (state.myId && detail?.peerId === state.myId) {
+        if (state.isSyncingRegistry) return;
+        clearTimeout(registryDebounce);
+        registryDebounce = setTimeout(() => api.loadBoardsRegistry(), 800);
         return;
       }
 
@@ -2562,11 +2769,6 @@
         renderSidebarTabs();
       }
     }, 1000);
-
-    const observer = new MutationObserver(() => {
-      renderSidebarTabs();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   init();
