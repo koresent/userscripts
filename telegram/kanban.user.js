@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Kanban Board
 // @namespace      github.com/koresent/userscripts
-// @version        2.0.0
+// @version        2.1.0
 // @description    Native multi-board Kanban inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
 // @author         Koresent
 // @license        GPL-3.0
@@ -52,15 +52,14 @@
     trash: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
     edit: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`,
     close: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
-    image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`,
-    move: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M10 9h4V6h3l-5-5-5 5h3v3zm-1 1H6V7l-5 5 5 5v-3h3v-4zm14 2l-5-5v3h-3v4h3v3l5-5zm-9 3h-4v3H7l5 5 5-5h-3v-3z"/></svg>`
+    image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`
   };
 
   function parseBoardTarget(input) {
     if (!input) return null;
     const str = String(input).trim();
 
-    // Link format: https://t.me/c/2482353775/4170 or t.me/c/2482353775/4170/123
+    // Link format: https://t.me/c/<channel_id>/<topic_id> or t.me/c/...
     const matchC = str.match(/(?:https?:\/\/)?t\.me\/c\/(\d+)(?:\/(\d+))?/i);
     if (matchC) {
       const peerId = -Number(matchC[1]);
@@ -68,7 +67,7 @@
       return { peerId, topicId };
     }
 
-    // Raw format: -1002482353775:4170, -2482353775_4170, or bare peerId
+    // Raw format: -100...:topic, -..., or bare peerId
     const matchRaw = str.match(/^(-?\d+)(?:[:_/](\d+))?$/);
     if (matchRaw) {
       let peerStr = matchRaw[1];
@@ -136,7 +135,7 @@
     activeInlineCol: null,
     activeMenuColId: null,
     isProcessingOutbox: false,
-    modalDescTab: 'write' // 'write' | 'preview'
+    modalDescTab: 'write'
   };
 
   function create1x1PixelBlob() {
@@ -383,6 +382,7 @@
         const history = res.history || [];
         let foundBoards = [];
 
+        // 1. Check for JSON boards manifest in Saved Messages
         for (const mid of history) {
           const raw = apiProxy.getMessageByPeer(myId, mid);
           if (raw?.message && KANBAN_BOARDS_REGEX.test(raw.message)) {
@@ -398,39 +398,45 @@
           }
         }
 
+        // 2. Check for plain links in Saved Messages if no manifest JSON was found
         if (foundBoards.length === 0) {
           for (const mid of history) {
             const raw = apiProxy.getMessageByPeer(myId, mid);
             if (raw?.message) {
-              const target = parseBoardTarget(raw.message);
-              if (target) {
-                foundBoards.push({
-                  id: 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId),
-                  peerId: target.peerId,
-                  topicId: target.topicId,
-                  title: null
-                });
+              const lines = raw.message.split('\n');
+              for (const line of lines) {
+                const target = parseBoardTarget(line);
+                if (target) {
+                  const id = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
+                  if (!foundBoards.some((b) => b.id === id)) {
+                    let title = null;
+                    const titleMatch = line.match(/^[•\-*]?\s*([^:]+):\s*https?:\/\/t\.me\/c\//i);
+                    if (titleMatch) {
+                      title = titleMatch[1].trim();
+                    }
+                    foundBoards.push({
+                      id,
+                      peerId: target.peerId,
+                      topicId: target.topicId,
+                      title: title
+                    });
+                  }
+                }
               }
             }
           }
         }
 
-        if (foundBoards.length === 0) {
-          foundBoards = [
-            {
-              id: 'board_mixer_test',
-              peerId: -2482353775,
-              topicId: 4170,
-              title: 'Mixer Kanban'
-            },
-            {
-              id: 'board_personal_kanban',
-              peerId: -2358826579,
-              topicId: null,
-              title: 'Personal Kanban'
-            }
-          ];
-          await this.syncBoardsRegistryToSavedMessages(foundBoards);
+        // 3. If no boards registry message exists at all, initialize an empty template message once
+        if (!state.boardsRegistryMid && foundBoards.length === 0) {
+          const initialText = `📋 Telegram Kanban Boards Registry\nAdd your board links here (e.g. https://t.me/c/<channel_id>/<topic_id>):\n\n---\n<!--kanban-boards:[]-->`;
+          const sent = await mm.sendText({
+            peerId: myId,
+            text: initialText
+          });
+          if (sent?.message) {
+            state.boardsRegistryMid = sent.message.mid || sent.message.id;
+          }
         }
 
         state.boards = foundBoards;
@@ -441,58 +447,21 @@
           }
         }
 
-        const savedActiveId = typeof GM_getValue === 'function' ? GM_getValue(STORAGE_KEYS.activeBoardId, null) : null;
-        const initialBoard = state.boards.find((b) => b.id === savedActiveId) || state.boards[0];
-        if (initialBoard) {
-          await this.selectBoard(initialBoard.id);
+        if (state.boards.length > 0) {
+          const savedActiveId = typeof GM_getValue === 'function' ? GM_getValue(STORAGE_KEYS.activeBoardId, null) : null;
+          const initialBoard = state.boards.find((b) => b.id === savedActiveId) || state.boards[0];
+          if (initialBoard) {
+            await this.selectBoard(initialBoard.id);
+          }
+        } else {
+          state.activeBoardId = null;
+          state.peerId = null;
+          state.topicId = null;
         }
 
         renderSidebarTabs();
       } catch (err) {
-        console.warn('[Kanban] Load boards registry error:', err);
-      }
-    },
-
-    async syncBoardsRegistryToSavedMessages(boards = state.boards) {
-      const { mm, apiProxy } = this.getManagers();
-      if (!mm || !state.myId) return;
-
-      const payload = boards.map((b) => ({
-        id: b.id,
-        peerId: b.peerId,
-        topicId: b.topicId || null,
-        title: b.title || null
-      }));
-
-      const linksList = boards
-        .map((b) => {
-          const rawId = Math.abs(b.peerId);
-          const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
-          return `• ${b.title || 'Kanban'}: ${link}`;
-        })
-        .join('\n');
-
-      const text = `📋 Telegram Kanban Boards Registry\nThis message maintains your active Kanban boards and topics.\n\n${linksList}\n\n---\n<!--kanban-boards:${JSON.stringify(payload)}-->`;
-
-      try {
-        let msgToEdit = null;
-        if (state.boardsRegistryMid && apiProxy) {
-          msgToEdit = apiProxy.getMessageByPeer(state.myId, state.boardsRegistryMid);
-        }
-
-        if (msgToEdit) {
-          await mm.editMessage(msgToEdit, text);
-        } else {
-          const sent = await mm.sendText({
-            peerId: state.myId,
-            text: text
-          });
-          if (sent?.message) {
-            state.boardsRegistryMid = sent.message.mid || sent.message.id;
-          }
-        }
-      } catch (err) {
-        console.warn('[Kanban] Sync boards registry error:', err);
+        // Silently ignore to avoid console spam
       }
     },
 
@@ -537,7 +506,7 @@
 
     async loadBoardConfig(peerId, topicId) {
       const { mm, apiProxy } = this.getManagers();
-      if (!mm || !apiProxy) return;
+      if (!mm || !apiProxy || !peerId) return;
 
       try {
         const pinned = await mm.getPinnedMessage(peerId, topicId || undefined);
@@ -1421,45 +1390,6 @@
       border-color: var(--accent-color, #7daea3);
     }
 
-    .kanban-context-menu {
-      position: fixed;
-      background: #32302f;
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
-      border-radius: 8px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-      z-index: 1000;
-      min-width: 170px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      animation: kanban-fade 0.1s ease-out;
-    }
-
-    .kanban-context-item {
-      padding: 8px 14px;
-      font-size: 13px;
-      color: var(--text-color, #ebdbb2);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      transition: background 0.1s ease;
-    }
-
-    .kanban-context-item:hover {
-      background: rgba(255, 255, 255, 0.08);
-    }
-
-    .kanban-context-item.is-danger {
-      color: #ea6962;
-    }
-
-    .kanban-context-divider {
-      height: 1px;
-      background: var(--border-color, rgba(255, 255, 255, 0.08));
-      margin: 4px 0;
-    }
-
     .kanban-modal-backdrop {
       position: fixed;
       top: 0;
@@ -1650,24 +1580,6 @@
       border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
     }
 
-    .kanban-settings-boards-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-
-    .kanban-settings-board-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 12px;
-      background: rgba(255, 255, 255, 0.04);
-      border-radius: 8px;
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
-    }
-
     @keyframes kanban-fade {
       from { opacity: 0; transform: scale(0.97); }
       to { opacity: 1; transform: scale(1); }
@@ -1701,6 +1613,11 @@
           deactivateKanbanView();
         }
       });
+    }
+
+    if (!Array.isArray(state.boards) || state.boards.length === 0) {
+      group.innerHTML = '';
+      return;
     }
 
     const tabsHtml = state.boards
@@ -1776,6 +1693,19 @@
     const container = document.getElementById('kanban-board-container');
     if (!container || !state.isKanbanActive) return;
 
+    if (!state.boards || state.boards.length === 0) {
+      container.innerHTML = `
+        <div style="margin:auto;display:flex;flex-direction:column;align-items:center;gap:12px;opacity:0.7;max-width:380px;text-align:center;">
+          ${ICONS.kanban}
+          <div style="font-size:15px;font-weight:600;color:var(--text-color, #ebdbb2);">No Kanban Boards</div>
+          <div style="font-size:13px;line-height:1.5;color:var(--secondary-text-color, #a89984);">
+            Add board links to your Saved Messages registry to display boards.
+          </div>
+        </div>
+      `;
+      return;
+    }
+
     const currentBoard = state.boards.find((b) => b.id === state.activeBoardId);
     const boardTitle = currentBoard?.title || 'Kanban';
 
@@ -1790,7 +1720,7 @@
         </div>
         <div class="kanban-header-actions">
           <button class="kanban-btn kanban-btn-secondary" id="kanban-refresh-btn" title="Refresh">${ICONS.refresh}</button>
-          <button class="kanban-btn kanban-btn-secondary" id="kanban-settings-btn" title="Boards & Settings">${ICONS.settings}</button>
+          <button class="kanban-btn kanban-btn-secondary" id="kanban-settings-btn" title="Settings">${ICONS.settings}</button>
         </div>
       </div>
       <div class="kanban-columns-container" id="kanban-columns-wrap">
@@ -1944,7 +1874,10 @@
     if (refreshBtn) {
       refreshBtn.onclick = () => {
         api.processOutbox();
-        api.loadHistory(state.peerId, state.topicId);
+        api.loadBoardsRegistry();
+        if (state.peerId) {
+          api.loadHistory(state.peerId, state.topicId);
+        }
       };
     }
 
@@ -2060,12 +1993,14 @@
     });
 
     container.querySelectorAll('[data-quick-del]').forEach((btn) => {
-      btn.onclick = (e) => {
+      btn.onclick = async (e) => {
         e.stopPropagation();
         const mid = btn.getAttribute('data-quick-del');
         const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
         if (task) {
-          api.deleteTask(task);
+          if (confirm(`Delete task "${task.title}"?`)) {
+            await api.deleteTask(task);
+          }
         }
       };
     });
@@ -2076,13 +2011,6 @@
         const mid = card.getAttribute('data-card-mid');
         const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
         if (task) showTaskModal(task);
-      };
-
-      card.oncontextmenu = (e) => {
-        e.preventDefault();
-        const mid = card.getAttribute('data-card-mid');
-        const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
-        if (task) showContextMenu(e.clientX, e.clientY, task);
       };
 
       card.ondragstart = (e) => {
@@ -2189,84 +2117,6 @@
 
     state.activeInlineCol = null;
     api.createTask(text, '', colId);
-  }
-
-  function showContextMenu(x, y, task) {
-    closeActiveContextMenu();
-
-    const menu = document.createElement('div');
-    menu.className = 'kanban-context-menu';
-    menu.id = 'kanban-active-context-menu';
-
-    const colSubItems = state.columns
-      .filter((c) => c.id !== task.col)
-      .map(
-        (c) => `
-        <div class="kanban-context-item" data-ctx-move="${c.id}">
-          ${ICONS.move} Move to "${escapeHtml(c.title)}"
-        </div>
-      `
-      )
-      .join('');
-
-    menu.innerHTML = `
-      <div class="kanban-context-item" data-ctx-action="edit">
-        ${ICONS.edit} Edit Task
-      </div>
-      ${colSubItems ? `<div class="kanban-context-divider"></div>${colSubItems}` : ''}
-      <div class="kanban-context-divider"></div>
-      <div class="kanban-context-item is-danger" data-ctx-action="delete">
-        ${ICONS.trash} Delete Task
-      </div>
-    `;
-
-    document.body.appendChild(menu);
-
-    const menuWidth = 200;
-    const menuHeight = menu.offsetHeight || 160;
-    const posX = x + menuWidth > window.innerWidth ? window.innerWidth - menuWidth - 10 : x;
-    const posY = y + menuHeight > window.innerHeight ? window.innerHeight - menuHeight - 10 : y;
-
-    menu.style.left = `${posX}px`;
-    menu.style.top = `${posY}px`;
-
-    menu.querySelectorAll('[data-ctx-move]').forEach((item) => {
-      item.onclick = async (e) => {
-        e.stopPropagation();
-        const targetCol = item.getAttribute('data-ctx-move');
-        closeActiveContextMenu();
-        await api.updateTaskMeta(task, { col: targetCol });
-      };
-    });
-
-    const editBtn = menu.querySelector('[data-ctx-action="edit"]');
-    if (editBtn) {
-      editBtn.onclick = (e) => {
-        e.stopPropagation();
-        closeActiveContextMenu();
-        showTaskModal(task);
-      };
-    }
-
-    const delBtn = menu.querySelector('[data-ctx-action="delete"]');
-    if (delBtn) {
-      delBtn.onclick = async (e) => {
-        e.stopPropagation();
-        closeActiveContextMenu();
-        await api.deleteTask(task);
-      };
-    }
-
-    const dismiss = () => {
-      closeActiveContextMenu();
-      document.removeEventListener('click', dismiss);
-    };
-    setTimeout(() => document.addEventListener('click', dismiss), 10);
-  }
-
-  function closeActiveContextMenu() {
-    const existing = document.getElementById('kanban-active-context-menu');
-    if (existing) existing.remove();
   }
 
   function showTaskModal(task = null, defaultCol = null) {
@@ -2395,8 +2245,10 @@
 
     if (isEdit) {
       modalBackdrop.querySelector('#task-delete-btn').onclick = async () => {
-        closeActiveModal();
-        await api.deleteTask(task);
+        if (confirm(`Delete task "${task.title}"?`)) {
+          closeActiveModal();
+          await api.deleteTask(task);
+        }
       };
     }
 
@@ -2434,29 +2286,12 @@
     modalBackdrop.id = 'kanban-active-modal';
 
     modalBackdrop.innerHTML = `
-      <div class="kanban-modal" style="width:620px;" onclick="event.stopPropagation()">
+      <div class="kanban-modal" style="width:520px;" onclick="event.stopPropagation()">
         <div class="kanban-modal-header">
-          <span>Boards & Settings</span>
+          <span>Board Settings</span>
           <button class="kanban-modal-close" id="settings-close-btn">${ICONS.close}</button>
         </div>
         <div class="kanban-modal-body">
-          <div class="kanban-form-group">
-            <label class="kanban-form-label">Active Kanban Boards</label>
-            <div class="kanban-settings-boards-list" id="settings-boards-list"></div>
-          </div>
-
-          <div class="kanban-form-group" style="padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid var(--border-color, rgba(255,255,255,0.06));">
-            <label class="kanban-form-label" style="margin-bottom:6px;">Add Board by Link / ID</label>
-            <div style="display:flex;gap:8px;">
-              <input type="text" class="kanban-form-input" id="settings-new-board-link" placeholder="e.g. https://t.me/c/2482353775/4170 or -100...:topic" style="flex:2;">
-              <input type="text" class="kanban-form-input" id="settings-new-board-name" placeholder="Board Name (optional)" style="flex:1;">
-              <button class="kanban-btn" id="settings-add-board-btn" style="flex-shrink:0;">${ICONS.plus} Add</button>
-            </div>
-            <div style="font-size:11px;color:var(--secondary-text-color, #a89984);margin-top:4px;">
-              Board IDs and topics are synced directly to your Saved Messages.
-            </div>
-          </div>
-
           <div class="kanban-form-group">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <label class="kanban-form-label">Custom Priorities</label>
@@ -2477,104 +2312,6 @@
     modalBackdrop.onclick = closeActiveModal;
     modalBackdrop.querySelector('#settings-close-btn').onclick = closeActiveModal;
     modalBackdrop.querySelector('#settings-save-btn').onclick = closeActiveModal;
-
-    function renderBoardsList() {
-      const listEl = modalBackdrop.querySelector('#settings-boards-list');
-      if (!listEl) return;
-
-      listEl.innerHTML = state.boards
-        .map((b) => {
-          const rawId = Math.abs(b.peerId);
-          const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
-          const isCurrent = b.id === state.activeBoardId;
-          return `
-            <div class="kanban-settings-board-row">
-              <div style="display:flex;flex-direction:column;gap:2px;">
-                <div style="font-weight:600;font-size:13.5px;color:var(--text-color, #ebdbb2);">
-                  ${escapeHtml(b.title || 'Kanban')}
-                  ${isCurrent ? `<span style="font-size:11px;color:var(--accent-color, #7daea3);margin-left:6px;">(Active)</span>` : ''}
-                </div>
-                <div style="font-size:11px;color:var(--secondary-text-color, #a89984);">${escapeHtml(link)}</div>
-              </div>
-              <div style="display:flex;align-items:center;gap:6px;">
-                ${
-                  !isCurrent
-                    ? `<button class="kanban-btn kanban-btn-secondary" style="padding:2px 8px;font-size:11px;height:26px;" data-switch-board="${b.id}">Switch</button>`
-                    : ''
-                }
-                ${
-                  state.boards.length > 1
-                    ? `<button class="kanban-btn kanban-btn-danger" style="padding:2px 8px;font-size:11px;height:26px;" data-del-board="${b.id}">${ICONS.trash}</button>`
-                    : ''
-                }
-              </div>
-            </div>
-          `;
-        })
-        .join('');
-
-      listEl.querySelectorAll('[data-switch-board]').forEach((btn) => {
-        btn.onclick = async () => {
-          const bId = btn.getAttribute('data-switch-board');
-          await api.selectBoard(bId);
-          renderBoardsList();
-          renderKanbanView();
-        };
-      });
-
-      listEl.querySelectorAll('[data-del-board]').forEach((btn) => {
-        btn.onclick = async () => {
-          const bId = btn.getAttribute('data-del-board');
-          if (confirm('Remove this board from your registry?')) {
-            state.boards = state.boards.filter((b) => b.id !== bId);
-            await api.syncBoardsRegistryToSavedMessages();
-            if (state.activeBoardId === bId && state.boards.length > 0) {
-              await api.selectBoard(state.boards[0].id);
-            }
-            renderBoardsList();
-            renderSidebarTabs();
-            renderKanbanView();
-          }
-        };
-      });
-    }
-
-    renderBoardsList();
-
-    const addBoardBtn = modalBackdrop.querySelector('#settings-add-board-btn');
-    const newBoardLinkInput = modalBackdrop.querySelector('#settings-new-board-link');
-    const newBoardNameInput = modalBackdrop.querySelector('#settings-new-board-name');
-
-    addBoardBtn.onclick = async () => {
-      const linkVal = newBoardLinkInput.value.trim();
-      const customName = newBoardNameInput.value.trim();
-      if (!linkVal) return;
-
-      const target = parseBoardTarget(linkVal);
-      if (!target) {
-        alert('Invalid Telegram group/topic link or ID format.\nExample: https://t.me/c/2482353775/4170');
-        return;
-      }
-
-      const boardId = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
-      const title = customName || (await api.resolveBoardTitle(target.peerId, target.topicId));
-
-      state.boards.push({
-        id: boardId,
-        peerId: target.peerId,
-        topicId: target.topicId,
-        title: title
-      });
-
-      await api.syncBoardsRegistryToSavedMessages();
-      await api.selectBoard(boardId);
-
-      newBoardLinkInput.value = '';
-      newBoardNameInput.value = '';
-      renderBoardsList();
-      renderSidebarTabs();
-      renderKanbanView();
-    };
 
     function renderPrioritiesList() {
       const priosList = modalBackdrop.querySelector('#settings-priorities-list');
