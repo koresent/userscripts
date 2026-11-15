@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Chat Exporter
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
+// @version        1.1.0
 // @description    Export chat history to JSON and TOON directly via native MTProto layer
 // @author         Koresent
 // @license        GPL-3.0
@@ -25,12 +25,15 @@
   const CONFIG = {
     batchLimit: 100,
     requestDelayMs: 400,
-    btnContainerId: 'tg-export-actions',
-    btnJsonId: 'tg-export-json-btn',
-    btnToonId: 'tg-export-toon-btn'
+    progressToastId: 'tg-export-progress-toast',
+    itemJsonId: 'tg-export-item-json',
+    itemToonId: 'tg-export-item-toon',
+    itemStopId: 'tg-export-item-stop'
   };
 
   let activeAbortController = null;
+  let activeFormat = null;
+  let activeExportCount = 0;
 
   const ESCAPES = {
     '\\': '\\\\',
@@ -198,6 +201,76 @@
     URL.revokeObjectURL(url);
   }
 
+  function updateProgressToast(count, isFinished = false) {
+    let toast = document.getElementById(CONFIG.progressToastId);
+
+    if (isFinished) {
+      if (toast) {
+        toast.textContent = `Export complete: ${count} messages saved`;
+        setTimeout(() => toast?.remove(), 2500);
+      }
+      return;
+    }
+
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = CONFIG.progressToastId;
+      toast.style.cssText = `
+        position: fixed;
+        bottom: 72px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--surface-color, #242424);
+        color: var(--text-color, #ffffff);
+        border: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
+        border-radius: 20px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        z-index: 10000;
+        backdrop-filter: blur(8px);
+      `;
+
+      const textSpan = document.createElement('span');
+      textSpan.className = 'tg-export-progress-text';
+
+      const stopBtn = document.createElement('button');
+      stopBtn.textContent = 'Stop & Save';
+      stopBtn.style.cssText = `
+        background: var(--primary-color, #3390ec);
+        color: #ffffff;
+        border: none;
+        border-radius: 12px;
+        padding: 3px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      `;
+      stopBtn.onclick = () => {
+        if (activeAbortController) {
+          activeAbortController.abort();
+        }
+      };
+
+      toast.appendChild(textSpan);
+      toast.appendChild(stopBtn);
+      document.body.appendChild(toast);
+    }
+
+    const textSpan = toast.querySelector('.tg-export-progress-text');
+    if (textSpan) {
+      textSpan.textContent = `Exporting (${activeFormat.toUpperCase()}): ${count} messages...`;
+    }
+  }
+
+  function closeActiveMenu() {
+    document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  }
+
   async function exportChat(format) {
     const chat = win.appImManager?.chat;
     const peerId = chat?.peerId;
@@ -216,15 +289,11 @@
     }
 
     activeAbortController = new AbortController();
+    activeFormat = format;
+    activeExportCount = 0;
     const signal = activeAbortController.signal;
 
-    const btnJson = document.getElementById(CONFIG.btnJsonId);
-    const btnToon = document.getElementById(CONFIG.btnToonId);
-    const activeBtn = format === 'toon' ? btnToon : btnJson;
-    const inactiveBtn = format === 'toon' ? btnJson : btnToon;
-
-    if (inactiveBtn) inactiveBtn.disabled = true;
-    if (activeBtn) activeBtn.textContent = 'Stop (0)';
+    updateProgressToast(0);
 
     const chatTitle = getPeerTitle(peerId);
     const collectedMids = new Set();
@@ -260,9 +329,8 @@
           }
         }
 
-        if (activeBtn) {
-          activeBtn.textContent = `Stop (${resultMessages.length})`;
-        }
+        activeExportCount = resultMessages.length;
+        updateProgressToast(activeExportCount);
 
         if (res.isEnd?.top || res.isEnd?.both || addedInBatch === 0 || minMid === offsetId) {
           break;
@@ -278,14 +346,7 @@
       }
     } finally {
       activeAbortController = null;
-      if (btnJson) {
-        btnJson.textContent = 'JSON';
-        btnJson.disabled = false;
-      }
-      if (btnToon) {
-        btnToon.textContent = 'TOON';
-        btnToon.disabled = false;
-      }
+      activeFormat = null;
     }
 
     if (resultMessages.length > 0) {
@@ -306,80 +367,83 @@
       } else {
         triggerDownload(JSON.stringify(payload, null, 2), `tg_${safeTitle}_${timestamp}.json`, 'application/json;charset=utf-8');
       }
-    }
-  }
 
-  function handleButtonClick(format) {
-    if (activeAbortController) {
-      activeAbortController.abort();
+      updateProgressToast(resultMessages.length, true);
     } else {
-      exportChat(format);
+      const toast = document.getElementById(CONFIG.progressToastId);
+      if (toast) toast.remove();
     }
   }
 
-  function injectInterface() {
-    if (document.getElementById(CONFIG.btnContainerId)) return;
+  function createMenuItem(id, iconChar, labelText, onClick) {
+    const item = document.createElement('div');
+    item.id = id;
+    item.className = 'btn-menu-item rp-overflow';
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('tabindex', '0');
 
-    const topBar = document.querySelector('.top') || document.querySelector('.chat-info');
-    if (!topBar) return;
-
-    const container = document.createElement('div');
-    container.id = CONFIG.btnContainerId;
-    container.style.cssText = `
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      margin-left: auto;
-      margin-right: 12px;
-      z-index: 100;
-      user-select: none;
-    `;
+    const icon = document.createElement('span');
+    icon.className = 'tgico btn-menu-item-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = iconChar;
 
     const label = document.createElement('span');
-    label.textContent = 'Export:';
-    label.style.cssText = `
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.3px;
-      text-transform: uppercase;
-      opacity: 0.65;
-    `;
+    label.className = 'i18n btn-menu-item-text';
+    label.textContent = labelText;
 
-    const btnStyle = `
-      padding: 4px 8px;
-      font-size: 12px;
-      font-weight: 500;
-      line-height: 1.4;
-      border-radius: 6px;
-      border: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
-      background: var(--surface-color, rgba(127, 127, 127, 0.1));
-      color: var(--text-color, inherit);
-      cursor: pointer;
-      transition: background 0.15s ease, opacity 0.15s ease;
-    `;
+    item.appendChild(icon);
+    item.appendChild(label);
 
-    const btnJson = document.createElement('button');
-    btnJson.id = CONFIG.btnJsonId;
-    btnJson.textContent = 'JSON';
-    btnJson.style.cssText = btnStyle;
-    btnJson.onclick = () => handleButtonClick('json');
+    item.onclick = (e) => {
+      e.stopPropagation();
+      closeActiveMenu();
+      onClick();
+    };
 
-    const btnToon = document.createElement('button');
-    btnToon.id = CONFIG.btnToonId;
-    btnToon.textContent = 'TOON';
-    btnToon.style.cssText = btnStyle;
-    btnToon.onclick = () => handleButtonClick('toon');
+    return item;
+  }
 
-    container.appendChild(label);
-    container.appendChild(btnJson);
-    container.appendChild(btnToon);
-    topBar.appendChild(container);
+  function injectIntoMenu(menu) {
+    if (menu.querySelector(`#${CONFIG.itemJsonId}`) || menu.querySelector(`#${CONFIG.itemStopId}`)) {
+      return;
+    }
+
+    const items = Array.from(menu.querySelectorAll('.btn-menu-item'));
+    const isChatMenu = items.some((it) => {
+      const text = it.innerText || '';
+      return text.includes('Select Messages') || text.includes('Clear history') || text.includes('Change Wallpaper') || text.includes('Mute');
+    });
+
+    if (!isChatMenu) return;
+
+    const anchorItem = items.find((it) => it.innerText.includes('Select Messages')) || items[0];
+    if (!anchorItem) return;
+
+    if (activeAbortController) {
+      const stopItem = createMenuItem(
+        CONFIG.itemStopId,
+        '',
+        `Stop Export (${activeExportCount})`,
+        () => {
+          if (activeAbortController) {
+            activeAbortController.abort();
+          }
+        }
+      );
+      anchorItem.after(stopItem);
+      return;
+    }
+
+    const itemToon = createMenuItem(CONFIG.itemToonId, '', 'Export Chat (TOON)', () => exportChat('toon'));
+    const itemJson = createMenuItem(CONFIG.itemJsonId, '', 'Export Chat (JSON)', () => exportChat('json'));
+
+    anchorItem.after(itemToon);
+    anchorItem.after(itemJson);
   }
 
   const observer = new MutationObserver(() => {
-    if (!document.getElementById(CONFIG.btnContainerId) && (document.querySelector('.top') || document.querySelector('.chat-info'))) {
-      injectInterface();
-    }
+    const activeMenus = document.querySelectorAll('.btn-menu.active');
+    activeMenus.forEach(injectIntoMenu);
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
