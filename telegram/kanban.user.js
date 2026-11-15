@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Kanban Board
 // @namespace      github.com/koresent/userscripts
-// @version        1.3.0
-// @description    Native Kanban board inside Telegram Web K backed by a dedicated Telegram group
+// @version        2.0.0
+// @description    Native multi-board Kanban inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
 // @author         Koresent
 // @license        GPL-3.0
 // @icon           https://web.telegram.org/favicon.ico
@@ -20,14 +20,9 @@
   const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
   const STORAGE_KEYS = {
-    peerId: 'tg_kanban_peer_id',
-    columns: 'tg_kanban_columns',
-    priorities: 'tg_kanban_priorities',
-    outbox: 'tg_kanban_outbox',
-    configMid: 'tg_kanban_config_mid'
+    activeBoardId: 'tg_kanban_active_board',
+    outbox: 'tg_kanban_outbox'
   };
-
-  const DEFAULT_PEER_ID = -2358826579;
 
   const DEFAULT_COLUMNS = [
     { id: 'todo', title: 'To Do' },
@@ -44,70 +39,61 @@
 
   const KANBAN_BLOCK_REGEX = /\n*---\n*<!--kanban:(.*?)-->\s*$/s;
   const KANBAN_CONFIG_REGEX = /<!--kanban-config:(.*?)-->/s;
+  const KANBAN_BOARDS_REGEX = /<!--kanban-boards:(.*?)-->/s;
 
-  function normalizePeerId(id) {
-    if (!id) return DEFAULT_PEER_ID;
-    let str = String(id).trim();
-    if (str.startsWith('-100')) {
-      str = '-' + str.slice(4);
+  const ICONS = {
+    kanban: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M4 4h4v16H4V4zm6 0h4v11h-4V4zm6 0h4v7h-4V4z"/></svg>`,
+    plus: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`,
+    settings: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
+    refresh: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>`,
+    more: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`,
+    textDesc: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 18h12v-2H3v2zM3 6v2h18V6H3zm0 7h18v-2H3v2z"/></svg>`,
+    checklist: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
+    edit: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`,
+    close: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
+    image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`,
+    move: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M10 9h4V6h3l-5-5-5 5h3v3zm-1 1H6V7l-5 5 5 5v-3h3v-4zm14 2l-5-5v3h-3v4h3v3l5-5zm-9 3h-4v3H7l5 5 5-5h-3v-3z"/></svg>`
+  };
+
+  function parseBoardTarget(input) {
+    if (!input) return null;
+    const str = String(input).trim();
+
+    // Link format: https://t.me/c/2482353775/4170 or t.me/c/2482353775/4170/123
+    const matchC = str.match(/(?:https?:\/\/)?t\.me\/c\/(\d+)(?:\/(\d+))?/i);
+    if (matchC) {
+      const peerId = -Number(matchC[1]);
+      const topicId = matchC[2] ? Number(matchC[2]) : null;
+      return { peerId, topicId };
     }
-    const num = Number(str);
-    return Number.isFinite(num) ? num : DEFAULT_PEER_ID;
-  }
 
-  function getTargetPeerId() {
-    const raw = typeof GM_getValue === 'function' ? GM_getValue(STORAGE_KEYS.peerId, DEFAULT_PEER_ID) : DEFAULT_PEER_ID;
-    return normalizePeerId(raw);
-  }
-
-  function setTargetPeerId(peerId) {
-    const norm = normalizePeerId(peerId);
-    if (typeof GM_setValue === 'function') {
-      GM_setValue(STORAGE_KEYS.peerId, norm);
-    }
-    state.peerId = norm;
-  }
-
-  function getStoredColumns() {
-    if (typeof GM_getValue === 'function') {
-      const stored = GM_getValue(STORAGE_KEYS.columns, null);
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        } catch (_) {}
+    // Raw format: -1002482353775:4170, -2482353775_4170, or bare peerId
+    const matchRaw = str.match(/^(-?\d+)(?:[:_/](\d+))?$/);
+    if (matchRaw) {
+      let peerStr = matchRaw[1];
+      if (peerStr.startsWith('-100')) {
+        peerStr = '-' + peerStr.slice(4);
       }
+      const peerId = Number(peerStr);
+      const topicId = matchRaw[2] ? Number(matchRaw[2]) : null;
+      return { peerId, topicId };
     }
-    return DEFAULT_COLUMNS;
+
+    return null;
   }
 
-  function setStoredColumns(cols) {
-    if (typeof GM_setValue === 'function') {
-      GM_setValue(STORAGE_KEYS.columns, JSON.stringify(cols));
+  function getMessageThreadId(msg) {
+    if (!msg) return null;
+    if (msg.saved_peer_id) return msg.saved_peer_id;
+    const replyTo = msg.reply_to;
+    if (replyTo?._ === 'messageReplyHeader') {
+      return replyTo.reply_to_top_id || replyTo.reply_to_msg_id || null;
     }
-    state.columns = cols;
-    api.syncBoardConfigToGroup();
-  }
-
-  function getStoredPriorities() {
-    if (typeof GM_getValue === 'function') {
-      const stored = GM_getValue(STORAGE_KEYS.priorities, null);
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        } catch (_) {}
-      }
+    if (msg._ === 'messageService' && msg.action?._ === 'messageActionTopicCreate') {
+      return msg.mid || msg.id || null;
     }
-    return DEFAULT_PRIORITIES;
-  }
-
-  function setStoredPriorities(prios) {
-    if (typeof GM_setValue === 'function') {
-      GM_setValue(STORAGE_KEYS.priorities, JSON.stringify(prios));
-    }
-    state.priorities = prios;
-    api.syncBoardConfigToGroup();
+    return null;
   }
 
   function getStoredOutbox() {
@@ -131,11 +117,16 @@
   }
 
   const state = {
-    peerId: getTargetPeerId(),
-    columns: getStoredColumns(),
-    priorities: getStoredPriorities(),
+    myId: null,
+    boardsRegistryMid: null,
+    boards: [],
+    activeBoardId: null,
+    peerId: null,
+    topicId: null,
+    columns: DEFAULT_COLUMNS,
+    priorities: DEFAULT_PRIORITIES,
+    configMid: null,
     outbox: getStoredOutbox(),
-    configMid: typeof GM_getValue === 'function' ? GM_getValue(STORAGE_KEYS.configMid, null) : null,
     tasks: new Map(),
     isLoading: false,
     filterText: '',
@@ -144,20 +135,8 @@
     draggedColId: null,
     activeInlineCol: null,
     activeMenuColId: null,
-    isProcessingOutbox: false
-  };
-
-  const ICONS = {
-    kanban: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M4 4h4v16H4V4zm6 0h4v11h-4V4zm6 0h4v7h-4V4z"/></svg>`,
-    plus: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`,
-    settings: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
-    refresh: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>`,
-    more: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`,
-    textDesc: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 18h12v-2H3v2zM3 6v2h18V6H3zm0 7h18v-2H3v2z"/></svg>`,
-    trash: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
-    edit: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`,
-    close: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
-    image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`
+    isProcessingOutbox: false,
+    modalDescTab: 'write' // 'write' | 'preview'
   };
 
   function create1x1PixelBlob() {
@@ -177,11 +156,126 @@
     return state.priorities.find((p) => p.id === id) || null;
   }
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function formatInlineMarkdown(escapedText) {
+    return escapedText
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.+?)__/g, '<strong>$1</strong>')
+      .replace(/~~(.+?)~~/g, '<del>$1</del>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/_(.+?)_/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code class="kanban-inline-code">$1</code>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="kanban-md-link">$1</a>');
+  }
+
+  function renderMarkdown(mdText, taskMid = null) {
+    if (!mdText) return '';
+
+    const lines = mdText.split('\n');
+    let inCodeBlock = false;
+    let codeBlockLines = [];
+    const html = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (line.trim().startsWith('```')) {
+        if (inCodeBlock) {
+          html.push(`<pre class="kanban-code-block"><code>${escapeHtml(codeBlockLines.join('\n'))}</code></pre>`);
+          codeBlockLines = [];
+          inCodeBlock = false;
+        } else {
+          inCodeBlock = true;
+        }
+        continue;
+      }
+
+      if (inCodeBlock) {
+        codeBlockLines.push(line);
+        continue;
+      }
+
+      const checkMatch = line.match(/^(\s*[-*]\s+)\[([ xX])\]\s+(.*)$/);
+      if (checkMatch) {
+        const isChecked = checkMatch[2].toLowerCase() === 'x';
+        const itemText = formatInlineMarkdown(escapeHtml(checkMatch[3]));
+        html.push(`
+          <div class="kanban-checklist-row ${isChecked ? 'is-checked' : ''}" data-task-mid="${taskMid || ''}" data-line-index="${i}">
+            <input type="checkbox" class="kanban-checklist-checkbox" ${isChecked ? 'checked' : ''} />
+            <span class="kanban-checklist-text ${isChecked ? 'strikethrough' : ''}">${itemText}</span>
+          </div>
+        `);
+        continue;
+      }
+
+      if (line.startsWith('### ')) {
+        html.push(`<h3>${formatInlineMarkdown(escapeHtml(line.slice(4)))}</h3>`);
+        continue;
+      }
+      if (line.startsWith('## ')) {
+        html.push(`<h2>${formatInlineMarkdown(escapeHtml(line.slice(3)))}</h2>`);
+        continue;
+      }
+      if (line.startsWith('# ')) {
+        html.push(`<h1>${formatInlineMarkdown(escapeHtml(line.slice(2)))}</h1>`);
+        continue;
+      }
+
+      if (line.startsWith('> ')) {
+        html.push(`<blockquote>${formatInlineMarkdown(escapeHtml(line.slice(2)))}</blockquote>`);
+        continue;
+      }
+
+      const listMatch = line.match(/^(\s*[-*]\s+)(.*)$/);
+      if (listMatch) {
+        html.push(`<li>${formatInlineMarkdown(escapeHtml(listMatch[2]))}</li>`);
+        continue;
+      }
+
+      if (line.trim() === '') {
+        html.push('<div class="kanban-md-gap"></div>');
+        continue;
+      }
+
+      html.push(`<p>${formatInlineMarkdown(escapeHtml(line))}</p>`);
+    }
+
+    if (inCodeBlock) {
+      html.push(`<pre class="kanban-code-block"><code>${escapeHtml(codeBlockLines.join('\n'))}</code></pre>`);
+    }
+
+    return html.join('');
+  }
+
+  function getChecklistStats(desc) {
+    if (!desc) return null;
+    const lines = desc.split('\n');
+    let total = 0;
+    let done = 0;
+    for (const l of lines) {
+      if (l.match(/^\s*[-*]\s+\[([ xX])\]\s+/)) {
+        total++;
+        if (l.match(/^\s*[-*]\s+\[[xX]\]\s+/)) {
+          done++;
+        }
+      }
+    }
+    return total > 0 ? { total, done } : null;
+  }
+
   function parseTaskFromMessage(msg) {
     if (!msg || !msg.message) return null;
     const text = msg.message;
 
-    // Check if this is the board config message
     if (KANBAN_CONFIG_REGEX.test(text)) {
       try {
         const match = text.match(KANBAN_CONFIG_REGEX);
@@ -194,13 +288,8 @@
             state.priorities = parsed.priorities;
           }
           state.configMid = msg.mid || msg.id;
-          if (typeof GM_setValue === 'function') {
-            GM_setValue(STORAGE_KEYS.configMid, state.configMid);
-          }
         }
-      } catch (err) {
-        // Ignore JSON parse errors for corrupted config messages
-      }
+      } catch (_) {}
       return null;
     }
 
@@ -214,29 +303,39 @@
       return null;
     }
 
-    const cleanContent = text.slice(0, match.index).trim();
-    const lines = cleanContent.split('\n');
-    const title = lines[0] || 'Untitled';
-    const description = lines.slice(1).join('\n').trim();
+    const body = text.replace(KANBAN_BLOCK_REGEX, '').trim();
+    const firstLineEnd = body.indexOf('\n');
+    let title = '';
+    let description = '';
 
-    const photo = msg.media?._ === 'messageMediaPhoto' ? msg.media.photo : null;
-    let hasRealCover = false;
-    let coverThumb = null;
-
-    if (photo && photo.sizes && photo.sizes.length > 0) {
-      for (const s of photo.sizes) {
-        if (s.w > 1 || s.h > 1 || (s.size && s.size > 500)) {
-          hasRealCover = true;
-          coverThumb = s;
-          break;
-        }
-      }
-      if (!coverThumb) coverThumb = photo.sizes[photo.sizes.length - 1];
+    if (firstLineEnd === -1) {
+      title = body;
+    } else {
+      title = body.slice(0, firstLineEnd).trim();
+      description = body.slice(firstLineEnd + 1).trim();
     }
+
+    const photo = msg.media?.photo;
+    let coverThumb = null;
+    let hasRealCover = false;
+
+    if (photo && Array.isArray(photo.sizes) && photo.sizes.length > 0) {
+      const isInitialPlaceholder = photo.sizes.every((s) => s.w === 1 && s.h === 1);
+      if (!isInitialPlaceholder) {
+        hasRealCover = true;
+        coverThumb =
+          photo.sizes.find((s) => s.type === 'm') ||
+          photo.sizes.find((s) => s.type === 'x') ||
+          photo.sizes[0];
+      }
+    }
+
+    const threadId = getMessageThreadId(msg);
 
     return {
       mid: msg.mid || msg.id,
       id: msg.id,
+      threadId,
       rawMsg: msg,
       title,
       description,
@@ -248,7 +347,7 @@
       coverThumb,
       hasRealCover,
       coverUrl: null,
-      syncStatus: 'synced' // 'synced' | 'syncing' | 'error'
+      syncStatus: 'synced'
     };
   }
 
@@ -266,12 +365,182 @@
       return { mm, apiProxy, afm };
     },
 
-    async loadBoardConfig(peerId) {
+    async loadBoardsRegistry() {
+      const { mm, apiProxy } = this.getManagers();
+      if (!mm || !apiProxy) return;
+
+      const myId = win.rootScope?.myId || win.rootScope?.managers?.appUsersManager?.getSelf()?.id;
+      if (!myId) return;
+      state.myId = myId;
+
+      try {
+        const res = await mm.getHistory({
+          peerId: myId,
+          limit: 50,
+          offsetId: 0
+        });
+
+        const history = res.history || [];
+        let foundBoards = [];
+
+        for (const mid of history) {
+          const raw = apiProxy.getMessageByPeer(myId, mid);
+          if (raw?.message && KANBAN_BOARDS_REGEX.test(raw.message)) {
+            state.boardsRegistryMid = raw.mid || raw.id;
+            try {
+              const match = raw.message.match(KANBAN_BOARDS_REGEX);
+              const parsed = JSON.parse(match[1]);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                foundBoards = parsed;
+              }
+            } catch (_) {}
+            break;
+          }
+        }
+
+        if (foundBoards.length === 0) {
+          for (const mid of history) {
+            const raw = apiProxy.getMessageByPeer(myId, mid);
+            if (raw?.message) {
+              const target = parseBoardTarget(raw.message);
+              if (target) {
+                foundBoards.push({
+                  id: 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId),
+                  peerId: target.peerId,
+                  topicId: target.topicId,
+                  title: null
+                });
+              }
+            }
+          }
+        }
+
+        if (foundBoards.length === 0) {
+          foundBoards = [
+            {
+              id: 'board_mixer_test',
+              peerId: -2482353775,
+              topicId: 4170,
+              title: 'Mixer Kanban'
+            },
+            {
+              id: 'board_personal_kanban',
+              peerId: -2358826579,
+              topicId: null,
+              title: 'Personal Kanban'
+            }
+          ];
+          await this.syncBoardsRegistryToSavedMessages(foundBoards);
+        }
+
+        state.boards = foundBoards;
+
+        for (const b of state.boards) {
+          if (!b.title) {
+            b.title = await this.resolveBoardTitle(b.peerId, b.topicId);
+          }
+        }
+
+        const savedActiveId = typeof GM_getValue === 'function' ? GM_getValue(STORAGE_KEYS.activeBoardId, null) : null;
+        const initialBoard = state.boards.find((b) => b.id === savedActiveId) || state.boards[0];
+        if (initialBoard) {
+          await this.selectBoard(initialBoard.id);
+        }
+
+        renderSidebarTabs();
+      } catch (err) {
+        console.warn('[Kanban] Load boards registry error:', err);
+      }
+    },
+
+    async syncBoardsRegistryToSavedMessages(boards = state.boards) {
+      const { mm, apiProxy } = this.getManagers();
+      if (!mm || !state.myId) return;
+
+      const payload = boards.map((b) => ({
+        id: b.id,
+        peerId: b.peerId,
+        topicId: b.topicId || null,
+        title: b.title || null
+      }));
+
+      const linksList = boards
+        .map((b) => {
+          const rawId = Math.abs(b.peerId);
+          const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
+          return `• ${b.title || 'Kanban'}: ${link}`;
+        })
+        .join('\n');
+
+      const text = `📋 Telegram Kanban Boards Registry\nThis message maintains your active Kanban boards and topics.\n\n${linksList}\n\n---\n<!--kanban-boards:${JSON.stringify(payload)}-->`;
+
+      try {
+        let msgToEdit = null;
+        if (state.boardsRegistryMid && apiProxy) {
+          msgToEdit = apiProxy.getMessageByPeer(state.myId, state.boardsRegistryMid);
+        }
+
+        if (msgToEdit) {
+          await mm.editMessage(msgToEdit, text);
+        } else {
+          const sent = await mm.sendText({
+            peerId: state.myId,
+            text: text
+          });
+          if (sent?.message) {
+            state.boardsRegistryMid = sent.message.mid || sent.message.id;
+          }
+        }
+      } catch (err) {
+        console.warn('[Kanban] Sync boards registry error:', err);
+      }
+    },
+
+    async resolveBoardTitle(peerId, topicId) {
+      const { apiProxy } = this.getManagers();
+      const ds = win.rootScope?.managers?.dialogsStorage;
+
+      if (topicId && ds?.getForumTopic) {
+        const topic = ds.getForumTopic(peerId, topicId);
+        if (topic?.title) return topic.title;
+      }
+
+      const chatId = Math.abs(peerId);
+      const chat = apiProxy?.getChat?.(chatId);
+      if (chat?.title) {
+        return topicId ? `${chat.title} (#${topicId})` : chat.title;
+      }
+
+      return topicId ? `Topic #${topicId}` : `Board ${chatId}`;
+    },
+
+    async selectBoard(boardId) {
+      const board = state.boards.find((b) => b.id === boardId);
+      if (!board) return;
+
+      state.activeBoardId = board.id;
+      state.peerId = board.peerId;
+      state.topicId = board.topicId || null;
+      state.configMid = null;
+      state.tasks.clear();
+
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(STORAGE_KEYS.activeBoardId, board.id);
+      }
+
+      renderSidebarTabs();
+
+      if (state.isKanbanActive) {
+        await this.loadHistory(state.peerId, state.topicId);
+      }
+    },
+
+    async loadBoardConfig(peerId, topicId) {
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !apiProxy) return;
 
       try {
-        const pinned = await mm.getPinnedMessage(peerId);
+        const pinned = await mm.getPinnedMessage(peerId, topicId || undefined);
         let configMsg = null;
 
         if (pinned?.maxId) {
@@ -292,9 +561,6 @@
               state.priorities = parsed.priorities;
             }
             state.configMid = configMsg.mid || configMsg.id;
-            if (typeof GM_setValue === 'function') {
-              GM_setValue(STORAGE_KEYS.configMid, state.configMid);
-            }
           }
         }
       } catch (err) {
@@ -304,7 +570,7 @@
 
     async syncBoardConfigToGroup() {
       const { mm, apiProxy } = this.getManagers();
-      if (!mm) return;
+      if (!mm || !state.peerId) return;
 
       const payload = {
         columns: state.columns,
@@ -324,31 +590,29 @@
         } else {
           const sent = await mm.sendText({
             peerId: state.peerId,
+            threadId: state.topicId || undefined,
             text: text
           });
           if (sent?.message) {
             state.configMid = sent.message.mid || sent.message.id;
-            if (typeof GM_setValue === 'function') {
-              GM_setValue(STORAGE_KEYS.configMid, state.configMid);
-            }
             if (mm.updatePinnedMessage) {
               await mm.updatePinnedMessage(state.peerId, state.configMid, false, true);
             }
           }
         }
       } catch (err) {
-        console.warn('[Kanban] Sync config to group error:', err);
+        console.warn('[Kanban] Sync config error:', err);
       }
     },
 
-    async loadHistory(peerId) {
+    async loadHistory(peerId = state.peerId, topicId = state.topicId) {
       const { mm, apiProxy } = this.getManagers();
-      if (!mm || !apiProxy) return;
+      if (!mm || !apiProxy || !peerId) return;
 
       state.isLoading = true;
       renderKanbanView();
 
-      await this.loadBoardConfig(peerId);
+      await this.loadBoardConfig(peerId, topicId);
 
       const collectedTasks = new Map();
       let offsetId = 0;
@@ -358,6 +622,7 @@
         while (true) {
           const res = await mm.getHistory({
             peerId: peerId,
+            threadId: topicId || undefined,
             limit: limit,
             offsetId: offsetId,
             addOffset: 0
@@ -372,6 +637,9 @@
             const rawMsg = apiProxy.getMessageByPeer(peerId, mid);
             const task = parseTaskFromMessage(rawMsg);
             if (task) {
+              if (topicId && task.threadId && task.threadId !== topicId) {
+                continue;
+              }
               const existing = state.tasks.get(task.mid);
               if (existing?.coverUrl) task.coverUrl = existing.coverUrl;
               collectedTasks.set(task.mid, task);
@@ -418,7 +686,7 @@
 
     async createTask(title, description, col, prio = null, coverFile = null) {
       const { mm } = this.getManagers();
-      if (!mm) return;
+      if (!mm || !state.peerId) return;
 
       const colTasks = Array.from(state.tasks.values())
         .filter((t) => t.col === col)
@@ -441,6 +709,7 @@
       const optimisticTask = {
         mid: tempMid,
         id: null,
+        threadId: state.topicId,
         title,
         description,
         col,
@@ -459,6 +728,7 @@
       try {
         const sendResult = await mm.sendFile({
           peerId: state.peerId,
+          threadId: state.topicId || undefined,
           file: fileToUpload,
           caption: caption,
           isMedia: true
@@ -492,6 +762,8 @@
         outbox.push({
           id: 'op_' + Date.now(),
           type: 'create',
+          peerId: state.peerId,
+          topicId: state.topicId,
           payload: { title, description, col, prio }
         });
         setStoredOutbox(outbox);
@@ -538,6 +810,7 @@
         outbox.push({
           id: 'op_' + Date.now(),
           type: 'update_meta',
+          peerId: state.peerId,
           mid: task.mid,
           payload: { meta, title, desc }
         });
@@ -564,7 +837,7 @@
           options: { isMedia: true }
         });
         task.syncStatus = 'synced';
-        setTimeout(() => api.loadHistory(state.peerId), 800);
+        setTimeout(() => api.loadHistory(state.peerId, state.topicId), 800);
       } catch (err) {
         console.error('[Kanban] Update cover error:', err);
         task.syncStatus = 'error';
@@ -574,7 +847,7 @@
 
     async deleteTask(task) {
       const { mm } = this.getManagers();
-      if (!mm || !task.mid) return;
+      if (!mm || !task.mid || !state.peerId) return;
 
       try {
         await mm.deleteMessages(state.peerId, [task.mid], true);
@@ -586,6 +859,7 @@
         outbox.push({
           id: 'op_' + Date.now(),
           type: 'delete',
+          peerId: state.peerId,
           mid: task.mid
         });
         setStoredOutbox(outbox);
@@ -599,75 +873,127 @@
 
       state.isProcessingOutbox = true;
       const remaining = [];
+      const { mm, apiProxy } = this.getManagers();
 
       for (const op of outbox) {
         try {
+          if (!mm) throw new Error('Managers unavailable');
+
           if (op.type === 'create') {
-            await api.createTask(op.payload.title, op.payload.description, op.payload.col, op.payload.prio);
+            const { title, description, col, prio } = op.payload;
+            const meta = { col, pos: Date.now() };
+            if (prio) meta.prio = prio;
+            const caption = serializeTaskCaption(title, description, meta);
+            const blob = await create1x1PixelBlob();
+            const file = new File([blob], 'cover_1x1.png', { type: 'image/png' });
+            await mm.sendFile({
+              peerId: op.peerId || state.peerId,
+              threadId: op.topicId || undefined,
+              file: file,
+              caption: caption,
+              isMedia: true
+            });
           } else if (op.type === 'update_meta') {
-            const task = state.tasks.get(op.mid);
-            if (task && task.rawMsg) {
-              await api.updateTaskMeta(task, op.payload.meta, op.payload.title, op.payload.desc);
+            const raw = apiProxy.getMessageByPeer(op.peerId || state.peerId, op.mid);
+            if (raw) {
+              const caption = serializeTaskCaption(op.payload.title, op.payload.desc, op.payload.meta);
+              await mm.editMessage(raw, caption);
             }
           } else if (op.type === 'delete') {
-            const { mm } = api.getManagers();
-            if (mm) await mm.deleteMessages(state.peerId, [op.mid], true);
+            await mm.deleteMessages(op.peerId || state.peerId, [op.mid], true);
           }
         } catch (err) {
+          console.warn('[Kanban] Outbox op failed, will keep for next retry:', op, err);
           remaining.push(op);
         }
       }
 
       setStoredOutbox(remaining);
       state.isProcessingOutbox = false;
+
+      if (remaining.length === 0 && state.isKanbanActive) {
+        for (const task of state.tasks.values()) {
+          if (task.syncStatus === 'error') task.syncStatus = 'synced';
+        }
+        renderKanbanView();
+      }
     }
   };
 
   const STYLES = `
-    #main-columns.is-kanban #column-left,
-    #main-columns.is-kanban #column-center,
-    #main-columns.is-kanban #column-right {
+    #main-columns.is-kanban > #column-center,
+    #main-columns.is-kanban > #column-left {
       display: none !important;
+    }
+
+    #kanban-board-container {
+      display: none;
+      flex: 1;
+      height: 100%;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      background: transparent !important;
+      margin-block: var(--page-chats-padding, 8px);
+      margin-inline-start: calc(var(--page-chats-padding, 8px) + var(--folders-sidebar-offset, 72px));
+      margin-inline-end: var(--page-chats-padding, 8px);
+      box-sizing: border-box;
     }
 
     #main-columns.is-kanban #kanban-board-container {
       display: flex !important;
     }
 
-    #kanban-board-container {
-      display: none;
-      flex: 1 1 0%;
-      height: calc(100% - 2 * var(--page-chats-padding, 8px));
-      min-width: 0;
-      flex-direction: column;
-      background: transparent !important;
-      color: var(--primary-text-color, var(--text-color, #ffffff));
-      position: relative;
-      overflow: hidden;
-      font-family: inherit;
-      margin-block: var(--page-chats-padding, 8px);
-      margin-inline-start: calc(var(--page-chats-padding, 8px) + var(--folders-sidebar-offset, 72px));
-      margin-inline-end: var(--page-chats-padding, 8px);
-      z-index: 1;
-    }
-
     .kanban-header {
+      height: 52px;
+      padding: 0 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 4px 12px 4px;
-      height: auto;
+      gap: 12px;
       background: transparent !important;
-      border-bottom: none !important;
+      border: none !important;
       flex-shrink: 0;
-      gap: 16px;
       box-sizing: border-box;
     }
 
     .kanban-header-left {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .kanban-board-title-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-color, #ebdbb2);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    }
+
+    .kanban-search-input {
+      max-width: 280px;
+      width: 100%;
+      height: 34px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      border-radius: 8px;
+      padding: 0 12px;
+      color: var(--text-color, #ebdbb2);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .kanban-search-input:focus {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: var(--accent-color, #7daea3);
     }
 
     .kanban-header-actions {
@@ -676,54 +1002,49 @@
       gap: 8px;
     }
 
-    .kanban-search-input {
-      background: var(--surface-color, #282828);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
-      color: var(--primary-text-color, var(--text-color, #ffffff));
+    .kanban-btn {
+      height: 34px;
+      padding: 0 14px;
       border-radius: 8px;
-      padding: 6px 12px;
+      border: none;
+      background: var(--accent-color, #7daea3);
+      color: #1e1e1e;
       font-size: 13px;
-      outline: none;
-      width: 180px;
-      transition: width 0.2s, border-color 0.2s;
-    }
-    .kanban-search-input:focus {
-      width: 240px;
-      border-color: var(--primary-color, #b8bb26);
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: opacity 0.15s ease, transform 0.1s ease;
+      user-select: none;
     }
 
-    .kanban-btn {
-      background: var(--primary-color, #b8bb26);
-      color: var(--background-color, #1d2021);
-      border: none;
-      border-radius: 8px;
-      padding: 6px 12px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: filter 0.15s, opacity 0.15s;
-    }
     .kanban-btn:hover {
-      filter: brightness(1.1);
+      opacity: 0.9;
     }
 
     .kanban-btn-secondary {
-      background: var(--surface-color, #282828);
-      color: var(--primary-text-color, var(--text-color, #ffffff));
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-color, #ebdbb2);
       border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
     }
 
+    .kanban-btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .kanban-btn-danger {
+      background: #ea6962;
+      color: #fff;
+    }
+
     .kanban-columns-container {
-      display: flex;
       flex: 1;
+      display: flex;
+      gap: 16px;
+      padding: 8px 16px 16px 16px;
       overflow-x: auto;
       overflow-y: hidden;
-      padding: 0 4px 12px 4px;
-      gap: 16px;
       align-items: flex-start;
       box-sizing: border-box;
     }
@@ -733,12 +1054,12 @@
       min-width: 320px;
       max-height: 100%;
       background: var(--surface-color, #282828);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
       border-radius: 12px;
       display: flex;
       flex-direction: column;
-      flex-shrink: 0;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+      overflow: hidden;
       position: relative;
     }
 
@@ -748,38 +1069,36 @@
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
-      cursor: grab;
       user-select: none;
-    }
-    .kanban-column-header:active {
-      cursor: grabbing;
+      cursor: grab;
+      position: relative;
     }
 
     .kanban-column-title-wrap {
       display: flex;
       align-items: center;
       gap: 8px;
-      color: var(--primary-text-color, var(--text-color, #ffffff));
     }
 
     .kanban-column-title {
+      font-weight: 600;
       font-size: 14px;
-      font-weight: 700;
+      color: var(--text-color, #ebdbb2);
     }
 
     .kanban-column-badge {
-      background: var(--hover-color, rgba(255, 255, 255, 0.1));
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.7));
       font-size: 11px;
-      font-weight: 700;
       padding: 2px 7px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--secondary-text-color, #a89984);
       border-radius: 10px;
+      font-weight: 500;
     }
 
     .kanban-column-menu-btn {
       background: transparent;
       border: none;
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.6));
+      color: var(--secondary-text-color, #a89984);
       cursor: pointer;
       padding: 4px;
       border-radius: 6px;
@@ -787,88 +1106,106 @@
       align-items: center;
       justify-content: center;
     }
+
     .kanban-column-menu-btn:hover {
-      background: var(--hover-color, rgba(255, 255, 255, 0.08));
-      color: var(--primary-text-color, var(--text-color, #ffffff));
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-color, #ebdbb2);
     }
 
     .kanban-column-dropdown {
       position: absolute;
-      top: 44px;
+      top: 42px;
       right: 12px;
-      background: var(--surface-color, #282828);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+      background: #32302f;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
       border-radius: 8px;
-      padding: 4px 0;
-      min-width: 140px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
       z-index: 100;
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+      min-width: 140px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
 
     .kanban-dropdown-item {
       padding: 8px 12px;
       font-size: 13px;
-      color: var(--primary-text-color, var(--text-color, #ffffff));
+      color: var(--text-color, #ebdbb2);
       cursor: pointer;
       display: flex;
       align-items: center;
       gap: 8px;
     }
+
     .kanban-dropdown-item:hover {
-      background: var(--hover-color, rgba(255, 255, 255, 0.08));
+      background: rgba(255, 255, 255, 0.08);
     }
+
     .kanban-dropdown-item.is-danger {
-      color: #ff595a;
+      color: #ea6962;
     }
 
     .kanban-column-cards {
       flex: 1;
+      padding: 10px;
       overflow-y: auto;
-      padding: 12px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      min-height: 80px;
-    }
-
-    .kanban-column-cards.is-drag-over {
-      background: rgba(184, 187, 38, 0.06);
-      outline: 2px dashed var(--primary-color, #b8bb26);
-      outline-offset: -4px;
-      border-radius: 8px;
+      gap: 10px;
+      min-height: 50px;
     }
 
     .kanban-card {
-      background: var(--surface-color, #282828);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
       border-radius: 8px;
-      overflow: hidden;
-      cursor: grab;
-      display: flex;
-      flex-direction: column;
-      transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s;
+      cursor: pointer;
       user-select: none;
       position: relative;
+      transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+      overflow: hidden;
     }
+
     .kanban-card:hover {
-      border-color: rgba(255, 255, 255, 0.2);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
       transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+      border-color: rgba(255, 255, 255, 0.12);
     }
-    .kanban-card:active {
-      cursor: grabbing;
+
+    .kanban-card-quick-del {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.45);
+      border: none;
+      color: #ea6962;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease, background 0.15s ease;
+      z-index: 5;
     }
-    .kanban-card.is-dragging {
-      opacity: 0.35;
-      transform: scale(0.98);
+
+    .kanban-card:hover .kanban-card-quick-del {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .kanban-card-quick-del:hover {
+      background: rgba(234, 105, 98, 0.25);
     }
 
     .kanban-card-cover {
       width: 100%;
       height: 140px;
       object-fit: cover;
-      display: none;
-      background: var(--background-color, #1d2021);
+      display: block;
       border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
     }
 
@@ -876,15 +1213,16 @@
       padding: 10px 12px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 6px;
     }
 
     .kanban-card-title {
       font-size: 13.5px;
-      font-weight: 600;
-      line-height: 1.35;
-      color: var(--primary-text-color, var(--text-color, #ffffff));
+      font-weight: 500;
+      color: var(--text-color, #ebdbb2);
+      line-height: 1.4;
       word-break: break-word;
+      padding-right: 18px;
     }
 
     .kanban-card-badges {
@@ -892,207 +1230,298 @@
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
+      margin-top: 4px;
     }
 
     .kanban-priority-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       font-size: 11px;
       font-weight: 600;
       padding: 2px 7px;
-      border-radius: 4px;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
+      border-radius: 5px;
+      letter-spacing: 0.2px;
     }
 
     .kanban-priority-dot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
-      display: inline-block;
     }
 
-    .kanban-card-icon-indicator {
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.5));
+    .kanban-badge-checklist {
       display: inline-flex;
       align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--secondary-text-color, #a89984);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 6px;
+      border-radius: 5px;
+    }
+
+    .kanban-badge-checklist.all-done {
+      color: #a9b665;
     }
 
     .kanban-card-date {
       font-size: 11px;
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.4));
-    }
-
-    /* Sync Indicator Dot */
-    .kanban-sync-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      display: inline-block;
-      flex-shrink: 0;
+      color: var(--secondary-text-color, #a89984);
       margin-left: auto;
-      transition: background-color 0.2s, opacity 0.2s;
-    }
-    .kanban-sync-dot.synced {
-      background: var(--primary-color, #b8bb26);
-      opacity: 0.75;
-    }
-    .kanban-sync-dot.syncing {
-      background: var(--secondary-text-color, #a89984);
-      opacity: 0.9;
-      animation: kanbanPulse 1s infinite alternate;
-    }
-    .kanban-sync-dot.error {
-      background: #ff595a;
-      opacity: 1;
-      box-shadow: 0 0 6px rgba(255, 89, 90, 0.6);
-    }
-    @keyframes kanbanPulse {
-      from { opacity: 0.3; transform: scale(0.85); }
-      to { opacity: 1; transform: scale(1.15); }
     }
 
-    .kanban-column-footer {
-      padding: 8px 12px 12px;
+    .kanban-sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-left: 2px;
+      flex-shrink: 0;
+    }
+
+    .kanban-sync-dot.synced {
+      background: var(--accent-color, #7daea3);
+      opacity: 0.5;
+    }
+
+    .kanban-sync-dot.syncing {
+      background: #e78a4e;
+      animation: kanban-pulse 1s infinite alternate;
+    }
+
+    .kanban-sync-dot.error {
+      background: #ea6962;
+    }
+
+    @keyframes kanban-pulse {
+      0% { opacity: 0.3; transform: scale(0.85); }
+      100% { opacity: 1; transform: scale(1.15); }
+    }
+
+    .kanban-checklist-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 4px 0;
+      font-size: 13px;
+      color: var(--text-color, #ebdbb2);
+      line-height: 1.45;
+    }
+
+    .kanban-checklist-checkbox {
+      margin-top: 3px;
+      cursor: pointer;
+      accent-color: var(--accent-color, #7daea3);
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
+    }
+
+    .kanban-checklist-text.strikethrough {
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+
+    .kanban-inline-code {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+
+    .kanban-code-block {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+
+    .kanban-md-link {
+      color: var(--accent-color, #7daea3);
+      text-decoration: underline;
+    }
+
+    .kanban-md-gap {
+      height: 8px;
     }
 
     .kanban-add-card-btn {
-      width: 100%;
-      padding: 6px;
-      background: transparent;
-      border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.12));
-      border-radius: 6px;
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.5));
-      cursor: pointer;
+      width: 32px;
+      height: 32px;
+      margin: 8px auto 10px auto;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.1));
+      color: var(--secondary-text-color, #a89984);
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
     }
+
     .kanban-add-card-btn:hover {
-      background: var(--hover-color, rgba(255, 255, 255, 0.06));
-      color: var(--primary-text-color, var(--text-color, #ffffff));
-      border-color: rgba(255, 255, 255, 0.25);
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-color, #ebdbb2);
+      border-color: var(--accent-color, #7daea3);
     }
 
     .kanban-inline-composer {
+      padding: 10px;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      background: var(--surface-color, #282828);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+      background: rgba(255, 255, 255, 0.03);
       border-radius: 8px;
-      padding: 8px;
+      margin: 6px 10px 10px 10px;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
     }
 
     .kanban-inline-input {
-      background: var(--background-color, #1d2021);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
-      border-radius: 6px;
-      color: var(--primary-text-color, var(--text-color, #ffffff));
-      padding: 8px 10px;
+      width: 100%;
+      height: 60px;
+      background: transparent;
+      border: none;
+      color: var(--text-color, #ebdbb2);
       font-size: 13px;
+      resize: none;
       outline: none;
       font-family: inherit;
-      resize: none;
-      min-height: 48px;
-    }
-    .kanban-inline-input:focus {
-      border-color: var(--primary-color, #b8bb26);
     }
 
     .kanban-inline-actions {
       display: flex;
-      align-items: center;
       justify-content: flex-end;
-      gap: 6px;
+      gap: 8px;
     }
 
     .kanban-new-col-btn {
       width: 44px;
       min-width: 44px;
       height: 44px;
-      background: var(--surface-color, #282828);
-      border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.15));
-      border-radius: 10px;
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.6));
-      cursor: pointer;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.1));
+      border-radius: 12px;
       display: flex;
       align-items: center;
       justify-content: center;
+      color: var(--secondary-text-color, #a89984);
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
       flex-shrink: 0;
-      transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
+
     .kanban-new-col-btn:hover {
-      background: var(--hover-color, rgba(255, 255, 255, 0.1));
-      color: var(--primary-text-color, var(--text-color, #ffffff));
-      border-color: rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-color, #ebdbb2);
+      border-color: var(--accent-color, #7daea3);
+    }
+
+    .kanban-context-menu {
+      position: fixed;
+      background: #32302f;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      z-index: 1000;
+      min-width: 170px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      animation: kanban-fade 0.1s ease-out;
+    }
+
+    .kanban-context-item {
+      padding: 8px 14px;
+      font-size: 13px;
+      color: var(--text-color, #ebdbb2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: background 0.1s ease;
+    }
+
+    .kanban-context-item:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .kanban-context-item.is-danger {
+      color: #ea6962;
+    }
+
+    .kanban-context-divider {
+      height: 1px;
+      background: var(--border-color, rgba(255, 255, 255, 0.08));
+      margin: 4px 0;
     }
 
     .kanban-modal-backdrop {
       position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
-      z-index: 10000;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.65);
+      z-index: 999;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      backdrop-filter: blur(4px);
+      animation: kanban-fade 0.15s ease-out;
     }
 
     .kanban-modal {
-      width: 520px;
-      max-width: 100%;
-      background: var(--surface-color, #282828);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
+      width: 580px;
+      max-width: 90vw;
+      background: #282828;
       border-radius: 14px;
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-      overflow: hidden;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
       display: flex;
       flex-direction: column;
-      animation: kanbanPopIn 0.16s cubic-bezier(0, 0, 0.2, 1);
-    }
-
-    @keyframes kanbanPopIn {
-      from { opacity: 0; transform: scale(0.96); }
-      to { opacity: 1; transform: scale(1); }
+      overflow: hidden;
+      max-height: 90vh;
     }
 
     .kanban-modal-header {
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      padding: 16px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--primary-text-color, var(--text-color, #ffffff));
+      border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-color, #ebdbb2);
     }
 
     .kanban-modal-close {
+      background: transparent;
+      border: none;
+      color: var(--secondary-text-color, #a89984);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      opacity: 0.6;
-      border: none;
-      background: transparent;
-      color: inherit;
       padding: 4px;
-      border-radius: 4px;
+      border-radius: 6px;
     }
+
     .kanban-modal-close:hover {
-      opacity: 1;
-      background: var(--hover-color, rgba(255, 255, 255, 0.08));
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-color, #ebdbb2);
     }
 
     .kanban-modal-body {
-      padding: 18px;
+      padding: 20px;
+      overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 14px;
-      overflow-y: auto;
-      max-height: 70vh;
+      gap: 16px;
     }
 
     .kanban-form-group {
@@ -1101,48 +1530,110 @@
       gap: 6px;
     }
 
-    .kanban-form-label {
+    .kanban-form-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .kanban-tab-toggle {
+      display: inline-flex;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .kanban-tab-btn {
+      padding: 2px 8px;
       font-size: 11px;
-      font-weight: 700;
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.6));
+      border-radius: 4px;
+      border: none;
+      background: transparent;
+      color: var(--secondary-text-color, #a89984);
+      cursor: pointer;
+    }
+
+    .kanban-tab-btn.is-active {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text-color, #ebdbb2);
+      font-weight: 600;
+    }
+
+    .kanban-form-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--secondary-text-color, #a89984);
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
 
-    .kanban-form-input, .kanban-form-textarea, .kanban-form-select {
-      background: var(--background-color, #1d2021);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
-      color: var(--primary-text-color, var(--text-color, #ffffff));
-      border-radius: 6px;
-      padding: 8px 10px;
+    .kanban-form-input,
+    .kanban-form-select {
+      height: 38px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      border-radius: 8px;
+      padding: 0 12px;
+      color: var(--text-color, #ebdbb2);
       font-size: 13.5px;
-      font-family: inherit;
       outline: none;
     }
-    .kanban-form-input:focus, .kanban-form-textarea:focus, .kanban-form-select:focus {
-      border-color: var(--primary-color, #b8bb26);
+
+    .kanban-form-input:focus,
+    .kanban-form-select:focus {
+      border-color: var(--accent-color, #7daea3);
     }
 
     .kanban-form-textarea {
-      min-height: 90px;
+      min-height: 240px;
+      height: 240px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      border-radius: 8px;
+      padding: 12px;
+      color: var(--text-color, #ebdbb2);
+      font-size: 13.5px;
+      outline: none;
       resize: vertical;
+      font-family: inherit;
+      line-height: 1.5;
+      box-sizing: border-box;
+    }
+
+    .kanban-form-textarea:focus {
+      border-color: var(--accent-color, #7daea3);
+    }
+
+    .kanban-md-preview-pane {
+      min-height: 240px;
+      max-height: 340px;
+      overflow-y: auto;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      border-radius: 8px;
+      padding: 12px;
+      box-sizing: border-box;
     }
 
     .kanban-cover-preview-box {
       width: 100%;
       height: 120px;
-      border-radius: 6px;
-      border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.2));
+      border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.15));
+      border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
       overflow: hidden;
-      position: relative;
-      background: var(--background-color, #1d2021);
-      color: var(--secondary-text-color, rgba(255, 255, 255, 0.6));
-      font-size: 12px;
-      gap: 6px;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--secondary-text-color, #a89984);
+      font-size: 13px;
+    }
+
+    .kanban-cover-preview-box:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: var(--accent-color, #7daea3);
     }
 
     .kanban-cover-preview-img {
@@ -1152,33 +1643,34 @@
     }
 
     .kanban-modal-footer {
-      padding: 12px 18px;
-      border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+      padding: 14px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
     }
 
-    .kanban-btn-danger {
-      background: #ff595a;
-      color: #ffffff;
+    .kanban-settings-boards-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 200px;
+      overflow-y: auto;
     }
 
-    .kanban-prio-row {
+    .kanban-settings-board-row {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 0;
-      border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.05));
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 8px;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
     }
-    .kanban-prio-color-box {
-      width: 24px;
-      height: 24px;
-      border-radius: 4px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      cursor: pointer;
-      flex-shrink: 0;
+
+    @keyframes kanban-fade {
+      from { opacity: 0; transform: scale(0.97); }
+      to { opacity: 1; transform: scale(1); }
     }
   `;
 
@@ -1192,41 +1684,51 @@
     style.textContent = STYLES;
   }
 
-  function injectSidebarTab() {
+  function renderSidebarTabs() {
     const scrollable = document.querySelector('#folders-sidebar .folders-sidebar__scrollable');
-    if (!scrollable || document.getElementById('folders-sidebar-kanban-tab')) return;
+    if (!scrollable) return;
 
-    const tab = document.createElement('div');
-    tab.id = 'folders-sidebar-kanban-tab';
-    tab.className = 'folders-sidebar__folder-item rp';
-    tab.setAttribute('role', 'tab');
-    tab.setAttribute('tabindex', '0');
+    let group = document.getElementById('folders-sidebar-kanban-group');
+    if (!group) {
+      group = document.createElement('div');
+      group.id = 'folders-sidebar-kanban-group';
+      group.className = 'folders-sidebar-kanban-group';
+      scrollable.appendChild(group);
 
-    const iconWrap = document.createElement('div');
-    iconWrap.className = 'folders-sidebar__folder-item-icon';
-    iconWrap.style.cssText = 'display:flex;align-items:center;justify-content:center;';
-    iconWrap.innerHTML = ICONS.kanban;
+      scrollable.addEventListener('click', (e) => {
+        const clickedItem = e.target.closest('.folders-sidebar__folder-item');
+        if (clickedItem && !clickedItem.classList.contains('kanban-board-tab')) {
+          deactivateKanbanView();
+        }
+      });
+    }
 
-    const nameEl = document.createElement('div');
-    nameEl.className = 'folders-sidebar__folder-item-name';
-    nameEl.textContent = 'Kanban';
+    const tabsHtml = state.boards
+      .map((b) => {
+        const isSelected = state.isKanbanActive && state.activeBoardId === b.id;
+        const shortTitle = b.title ? (b.title.length > 8 ? b.title.slice(0, 7) + '…' : b.title) : 'Kanban';
+        return `
+          <div class="folders-sidebar__folder-item rp kanban-board-tab ${isSelected ? 'folders-sidebar__folder-item--selected' : ''}"
+               role="tab" tabindex="0" data-board-id="${b.id}" title="${escapeHtml(b.title || 'Kanban')}">
+            <div class="folders-sidebar__folder-item-icon" style="display:flex;align-items:center;justify-content:center;">
+              ${ICONS.kanban}
+            </div>
+            <div class="folders-sidebar__folder-item-name">${escapeHtml(shortTitle)}</div>
+          </div>
+        `;
+      })
+      .join('');
 
-    tab.appendChild(iconWrap);
-    tab.appendChild(nameEl);
+    group.innerHTML = tabsHtml;
 
-    tab.onclick = (e) => {
-      e.stopPropagation();
-      activateKanbanView();
-    };
-
-    scrollable.addEventListener('click', (e) => {
-      const clickedItem = e.target.closest('.folders-sidebar__folder-item');
-      if (clickedItem && clickedItem !== tab) {
-        deactivateKanbanView();
-      }
+    group.querySelectorAll('.kanban-board-tab').forEach((tab) => {
+      tab.onclick = async (e) => {
+        e.stopPropagation();
+        const boardId = tab.getAttribute('data-board-id');
+        await api.selectBoard(boardId);
+        activateKanbanView();
+      };
     });
-
-    scrollable.appendChild(tab);
   }
 
   function activateKanbanView() {
@@ -1238,12 +1740,11 @@
       el.classList.remove('folders-sidebar__folder-item--selected');
     });
 
-    const tab = document.getElementById('folders-sidebar-kanban-tab');
-    if (tab) tab.classList.add('folders-sidebar__folder-item--selected');
-
+    renderSidebarTabs();
     ensureKanbanDOM();
-    if (state.tasks.size === 0) {
-      api.loadHistory(state.peerId);
+
+    if (state.tasks.size === 0 && state.peerId) {
+      api.loadHistory(state.peerId, state.topicId);
     } else {
       renderKanbanView();
     }
@@ -1254,8 +1755,9 @@
     const mainCols = document.getElementById('main-columns');
     if (mainCols) mainCols.classList.remove('is-kanban');
 
-    const tab = document.getElementById('folders-sidebar-kanban-tab');
-    if (tab) tab.classList.remove('folders-sidebar__folder-item--selected');
+    document.querySelectorAll('.kanban-board-tab').forEach((el) => {
+      el.classList.remove('folders-sidebar__folder-item--selected');
+    });
   }
 
   function ensureKanbanDOM() {
@@ -1274,14 +1776,21 @@
     const container = document.getElementById('kanban-board-container');
     if (!container || !state.isKanbanActive) return;
 
+    const currentBoard = state.boards.find((b) => b.id === state.activeBoardId);
+    const boardTitle = currentBoard?.title || 'Kanban';
+
     container.innerHTML = `
       <div class="kanban-header">
         <div class="kanban-header-left">
+          <div class="kanban-board-title-badge" title="Active Kanban Board">
+            ${ICONS.kanban}
+            <span>${escapeHtml(boardTitle)}</span>
+          </div>
           <input type="text" class="kanban-search-input" id="kanban-search" placeholder="Search tasks..." value="${escapeHtml(state.filterText)}">
         </div>
         <div class="kanban-header-actions">
           <button class="kanban-btn kanban-btn-secondary" id="kanban-refresh-btn" title="Refresh">${ICONS.refresh}</button>
-          <button class="kanban-btn kanban-btn-secondary" id="kanban-settings-btn" title="Settings">${ICONS.settings}</button>
+          <button class="kanban-btn kanban-btn-secondary" id="kanban-settings-btn" title="Boards & Settings">${ICONS.settings}</button>
         </div>
       </div>
       <div class="kanban-columns-container" id="kanban-columns-wrap">
@@ -1326,6 +1835,13 @@
               : '';
 
             const hasDesc = task.description && task.description.length > 0;
+            const checklistStats = getChecklistStats(task.description);
+            const checklistBadgeHtml = checklistStats
+              ? `<span class="kanban-badge-checklist ${checklistStats.done === checklistStats.total ? 'all-done' : ''}" title="Checklist items completed">
+                  ${ICONS.checklist} ${checklistStats.done}/${checklistStats.total}
+                </span>`
+              : '';
+
             const coverStyle = task.coverUrl ? `display:block;` : `display:none;`;
             const coverSrc = task.coverUrl || '';
             const displayId = typeof task.id === 'number' && task.id < 100000000 ? `#${task.id}` : '';
@@ -1340,12 +1856,14 @@
 
             return `
               <div class="kanban-card" draggable="true" data-card-mid="${task.mid}">
+                <button class="kanban-card-quick-del" data-quick-del="${task.mid}" title="Delete task">${ICONS.trash}</button>
                 <img class="kanban-card-cover" src="${coverSrc}" style="${coverStyle}" alt="Cover">
                 <div class="kanban-card-body">
                   <div class="kanban-card-title">${escapeHtml(task.title)}</div>
                   <div class="kanban-card-badges">
                     ${prioBadgeHtml}
-                    ${hasDesc ? `<span class="kanban-card-icon-indicator" title="Has description">${ICONS.textDesc}</span>` : ''}
+                    ${checklistBadgeHtml}
+                    ${hasDesc && !checklistStats ? `<span class="kanban-card-icon-indicator" title="Has description">${ICONS.textDesc}</span>` : ''}
                     ${displayId ? `<span class="kanban-card-date">${displayId}</span>` : ''}
                     <span class="kanban-sync-dot ${syncStatus}" title="${syncTitle}"></span>
                   </div>
@@ -1399,18 +1917,11 @@
             <div class="kanban-column-cards" data-col-cards="${col.id}">
               ${cardsHtml}
             </div>
-            <div class="kanban-column-footer">
-              ${inlineComposerHtml}
-            </div>
+            ${inlineComposerHtml}
           </div>
         `;
       })
       .join('');
-  }
-
-  function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   function bindKanbanEvents() {
@@ -1423,31 +1934,44 @@
         state.filterText = e.target.value;
         const columnsWrap = container.querySelector('#kanban-columns-wrap');
         if (columnsWrap) {
-          columnsWrap.innerHTML =
-            renderColumnsHtml() +
-            `<button class="kanban-new-col-btn" id="kanban-add-col-btn" title="Add column">${ICONS.plus}</button>`;
+          columnsWrap.innerHTML = `${renderColumnsHtml()}<button class="kanban-new-col-btn" id="kanban-add-col-btn" title="Add column">${ICONS.plus}</button>`;
+          bindColumnEvents();
         }
-        bindKanbanEvents();
       };
     }
 
     const refreshBtn = container.querySelector('#kanban-refresh-btn');
-    if (refreshBtn) refreshBtn.onclick = () => api.loadHistory(state.peerId);
+    if (refreshBtn) {
+      refreshBtn.onclick = () => {
+        api.processOutbox();
+        api.loadHistory(state.peerId, state.topicId);
+      };
+    }
 
     const settingsBtn = container.querySelector('#kanban-settings-btn');
-    if (settingsBtn) settingsBtn.onclick = () => showSettingsModal();
+    if (settingsBtn) {
+      settingsBtn.onclick = showSettingsModal;
+    }
 
     const addColBtn = container.querySelector('#kanban-add-col-btn');
     if (addColBtn) {
       addColBtn.onclick = () => {
-        const title = prompt('Enter new column name:');
+        const title = prompt('Enter new column title:');
         if (title && title.trim()) {
-          const newCols = [...state.columns, { id: 'col_' + Date.now(), title: title.trim() }];
-          setStoredColumns(newCols);
+          const id = 'col_' + Date.now();
+          state.columns.push({ id, title: title.trim() });
+          api.syncBoardConfigToGroup();
           renderKanbanView();
         }
       };
     }
+
+    bindColumnEvents();
+  }
+
+  function bindColumnEvents() {
+    const container = document.getElementById('kanban-board-container');
+    if (!container) return;
 
     container.querySelectorAll('[data-col-menu]').forEach((btn) => {
       btn.onclick = (e) => {
@@ -1467,48 +1991,44 @@
 
         if (action === 'rename') {
           const col = state.columns.find((c) => c.id === colId);
-          const newTitle = prompt('Rename column:', col?.title || '');
-          if (newTitle && newTitle.trim()) {
-            col.title = newTitle.trim();
-            setStoredColumns([...state.columns]);
-            renderKanbanView();
+          if (col) {
+            const newTitle = prompt('Rename column:', col.title);
+            if (newTitle && newTitle.trim()) {
+              col.title = newTitle.trim();
+              api.syncBoardConfigToGroup();
+              renderKanbanView();
+            }
           }
         } else if (action === 'delete') {
           if (state.columns.length <= 1) {
             alert('Cannot delete the only column.');
             return;
           }
-          if (confirm('Delete this column? Tasks will be moved to the first column.')) {
-            const fallbackCol = state.columns.find((c) => c.id !== colId)?.id;
-            state.tasks.forEach((t) => {
-              if (t.col === colId) {
-                t.col = fallbackCol;
-                api.updateTaskMeta(t, { col: fallbackCol });
+          if (confirm('Delete this column? Tasks inside will be moved to the first column.')) {
+            const firstCol = state.columns.find((c) => c.id !== colId);
+            for (const task of state.tasks.values()) {
+              if (task.col === colId) {
+                task.col = firstCol.id;
+                api.updateTaskMeta(task, { col: firstCol.id });
               }
-            });
-            const newCols = state.columns.filter((c) => c.id !== colId);
-            setStoredColumns(newCols);
+            }
+            state.columns = state.columns.filter((c) => c.id !== colId);
+            api.syncBoardConfigToGroup();
             renderKanbanView();
           }
         }
       };
     });
 
-    document.addEventListener(
-      'click',
-      (e) => {
-        if (state.activeMenuColId && !e.target.closest('.kanban-column-dropdown') && !e.target.closest('[data-col-menu]')) {
-          state.activeMenuColId = null;
-          renderKanbanView();
-        }
-      },
-      { once: true }
-    );
-
     container.querySelectorAll('[data-inline-open]').forEach((btn) => {
       btn.onclick = () => {
         const colId = btn.getAttribute('data-inline-open');
-        openInlineComposer(colId);
+        state.activeInlineCol = colId;
+        renderKanbanView();
+        setTimeout(() => {
+          const input = document.getElementById(`inline-input-${colId}`);
+          if (input) input.focus();
+        }, 50);
       };
     });
 
@@ -1522,221 +2042,231 @@
     container.querySelectorAll('[data-inline-save]').forEach((btn) => {
       btn.onclick = () => {
         const colId = btn.getAttribute('data-inline-save');
-        submitInlineComposer(colId);
+        saveInlineTask(colId);
       };
     });
 
-    if (state.activeInlineCol) {
-      const input = container.querySelector(`#inline-input-${state.activeInlineCol}`);
-      if (input) {
-        input.focus();
-        input.onkeydown = (e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            submitInlineComposer(state.activeInlineCol);
-          } else if (e.key === 'Escape') {
-            state.activeInlineCol = null;
-            renderKanbanView();
-          }
-        };
-      }
-    }
+    container.querySelectorAll('.kanban-inline-input').forEach((input) => {
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const colId = input.id.replace('inline-input-', '');
+          saveInlineTask(colId);
+        } else if (e.key === 'Escape') {
+          state.activeInlineCol = null;
+          renderKanbanView();
+        }
+      };
+    });
 
-    bindDragAndDrop();
-    bindColumnDragAndDrop();
-    bindCardClicks();
-  }
+    container.querySelectorAll('[data-quick-del]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const mid = btn.getAttribute('data-quick-del');
+        const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
+        if (task) {
+          api.deleteTask(task);
+        }
+      };
+    });
 
-  function openInlineComposer(colId) {
-    state.activeInlineCol = colId;
-    renderKanbanView();
-  }
-
-  function submitInlineComposer(colId) {
-    const container = document.getElementById('kanban-board-container');
-    const input = container?.querySelector(`#inline-input-${colId}`);
-    const text = input?.value?.trim();
-    if (!text) {
-      state.activeInlineCol = null;
-      renderKanbanView();
-      return;
-    }
-
-    const lines = text.split('\n');
-    const title = lines[0];
-    const desc = lines.slice(1).join('\n').trim();
-
-    state.activeInlineCol = null;
-    api.createTask(title, desc, colId, null);
-  }
-
-  function bindCardClicks() {
-    const container = document.getElementById('kanban-board-container');
-    if (!container) return;
-
-    container.querySelectorAll('.kanban-card').forEach((cardEl) => {
-      cardEl.onclick = () => {
-        if (cardEl.classList.contains('is-dragging')) return;
-        const mid = cardEl.getAttribute('data-card-mid');
-        const numMid = Number(mid);
-        const task = state.tasks.get(Number.isFinite(numMid) ? numMid : mid);
+    container.querySelectorAll('.kanban-card').forEach((card) => {
+      card.onclick = (e) => {
+        if (e.target.closest('.kanban-checklist-checkbox') || e.target.closest('.kanban-card-quick-del')) return;
+        const mid = card.getAttribute('data-card-mid');
+        const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
         if (task) showTaskModal(task);
       };
-    });
-  }
 
-  function bindDragAndDrop() {
-    const container = document.getElementById('kanban-board-container');
-    if (!container) return;
+      card.oncontextmenu = (e) => {
+        e.preventDefault();
+        const mid = card.getAttribute('data-card-mid');
+        const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
+        if (task) showContextMenu(e.clientX, e.clientY, task);
+      };
 
-    const cards = container.querySelectorAll('.kanban-card');
-    const dropzones = container.querySelectorAll('.kanban-column-cards');
+      card.ondragstart = (e) => {
+        state.draggedMid = card.getAttribute('data-card-mid');
+        e.dataTransfer.setData('text/plain', state.draggedMid);
+        card.style.opacity = '0.4';
+      };
 
-    cards.forEach((card) => {
-      card.addEventListener('dragstart', (e) => {
-        e.stopPropagation();
-        const rawMid = card.getAttribute('data-card-mid');
-        const numMid = Number(rawMid);
-        state.draggedMid = Number.isFinite(numMid) ? numMid : rawMid;
-        card.classList.add('is-dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', String(state.draggedMid));
-      });
-
-      card.addEventListener('dragend', () => {
-        card.classList.remove('is-dragging');
+      card.ondragend = () => {
+        card.style.opacity = '1';
         state.draggedMid = null;
-        dropzones.forEach((dz) => dz.classList.remove('is-drag-over'));
-      });
+      };
     });
 
-    dropzones.forEach((zone) => {
-      zone.addEventListener('dragover', (e) => {
-        if (!state.draggedMid) return;
+    container.querySelectorAll('.kanban-column-cards').forEach((colCards) => {
+      colCards.ondragover = (e) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        zone.classList.add('is-drag-over');
+        colCards.style.background = 'rgba(255, 255, 255, 0.03)';
+      };
 
-        const afterElement = getDragAfterElement(zone, e.clientY);
-        const draggingCard = container.querySelector('.kanban-card.is-dragging');
-        if (draggingCard) {
-          if (afterElement == null) {
-            zone.appendChild(draggingCard);
-          } else {
-            zone.insertBefore(draggingCard, afterElement);
-          }
-        }
-      });
+      colCards.ondragleave = () => {
+        colCards.style.background = 'transparent';
+      };
 
-      zone.addEventListener('dragleave', () => {
-        zone.classList.remove('is-drag-over');
-      });
-
-      zone.addEventListener('drop', async (e) => {
-        if (!state.draggedMid) return;
+      colCards.ondrop = (e) => {
         e.preventDefault();
-        zone.classList.remove('is-drag-over');
+        colCards.style.background = 'transparent';
+        const targetColId = colCards.getAttribute('data-col-cards');
+        const mid = state.draggedMid || e.dataTransfer.getData('text/plain');
 
-        const mid = state.draggedMid;
-        const task = state.tasks.get(mid);
+        if (!mid || !targetColId) return;
+
+        const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
         if (!task) return;
 
-        const targetColId = zone.getAttribute('data-col-cards');
-        const cardElements = Array.from(zone.querySelectorAll('.kanban-card'));
-        const dropIndex = cardElements.findIndex((el) => {
-          const raw = el.getAttribute('data-card-mid');
-          const num = Number(raw);
-          return (Number.isFinite(num) ? num : raw) === mid;
-        });
+        const colTasks = Array.from(state.tasks.values())
+          .filter((t) => t.col === targetColId && String(t.mid) !== String(mid))
+          .sort((a, b) => a.pos - b.pos);
+
+        const cardEls = Array.from(colCards.querySelectorAll('.kanban-card'));
+        let insertIndex = colTasks.length;
+
+        for (let i = 0; i < cardEls.length; i++) {
+          const rect = cardEls[i].getBoundingClientRect();
+          if (e.clientY < rect.top + rect.height / 2) {
+            insertIndex = i;
+            break;
+          }
+        }
 
         let newPos = 1000;
-        const prevCardEl = cardElements[dropIndex - 1];
-        const nextCardEl = cardElements[dropIndex + 1];
-
-        const getCardPos = (el) => {
-          if (!el) return null;
-          const raw = el.getAttribute('data-card-mid');
-          const num = Number(raw);
-          return state.tasks.get(Number.isFinite(num) ? num : raw)?.pos;
-        };
-
-        const prevPos = getCardPos(prevCardEl);
-        const nextPos = getCardPos(nextCardEl);
-
-        if (prevPos != null && nextPos != null) {
-          newPos = Math.round((prevPos + nextPos) / 2);
-        } else if (prevPos != null) {
-          newPos = prevPos + 1000;
-        } else if (nextPos != null) {
-          newPos = Math.round(nextPos / 2) || 500;
+        if (colTasks.length === 0) {
+          newPos = 1000;
+        } else if (insertIndex === 0) {
+          newPos = colTasks[0].pos / 2;
+        } else if (insertIndex >= colTasks.length) {
+          newPos = colTasks[colTasks.length - 1].pos + 1000;
+        } else {
+          newPos = (colTasks[insertIndex - 1].pos + colTasks[insertIndex].pos) / 2;
         }
 
         task.col = targetColId;
         task.pos = newPos;
+        renderKanbanView();
 
-        await api.updateTaskMeta(task, { col: targetColId, pos: newPos });
-      });
-    });
-  }
-
-  function getDragAfterElement(container, y) {
-    const draggableElements = [...container.querySelectorAll('.kanban-card:not(.is-dragging)')];
-    return draggableElements.reduce(
-      (closest, child) => {
-        const box = child.getBoundingClientRect();
-        const offset = y - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) {
-          return { offset: offset, element: child };
-        } else {
-          return closest;
-        }
-      },
-      { offset: Number.NEGATIVE_INFINITY }
-    ).element;
-  }
-
-  function bindColumnDragAndDrop() {
-    const container = document.getElementById('kanban-board-container');
-    if (!container) return;
-
-    const colHeaders = container.querySelectorAll('.kanban-column-header[draggable="true"]');
-    const colsWrap = container.querySelector('#kanban-columns-wrap');
-
-    colHeaders.forEach((header) => {
-      header.addEventListener('dragstart', (e) => {
-        state.draggedColId = header.getAttribute('data-drag-col');
-        header.closest('.kanban-column').style.opacity = '0.4';
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/column', state.draggedColId);
-      });
-
-      header.addEventListener('dragend', () => {
-        header.closest('.kanban-column').style.opacity = '1';
-        state.draggedColId = null;
-      });
+        api.updateTaskMeta(task, { col: targetColId, pos: newPos });
+      };
     });
 
-    if (colsWrap) {
-      colsWrap.addEventListener('dragover', (e) => {
-        if (!state.draggedColId) return;
+    container.querySelectorAll('[data-drag-col]').forEach((colHeader) => {
+      colHeader.ondragstart = (e) => {
+        state.draggedColId = colHeader.getAttribute('data-drag-col');
+        e.dataTransfer.setData('text/plain', state.draggedColId);
+      };
+
+      colHeader.ondragover = (e) => {
         e.preventDefault();
-        const targetCol = e.target.closest('.kanban-column');
-        if (!targetCol) return;
-        const targetColId = targetCol.getAttribute('data-col-id');
-        if (targetColId && targetColId !== state.draggedColId) {
-          const colIds = state.columns.map((c) => c.id);
-          const fromIdx = colIds.indexOf(state.draggedColId);
-          const toIdx = colIds.indexOf(targetColId);
+      };
+
+      colHeader.ondrop = (e) => {
+        e.preventDefault();
+        const targetColId = colHeader.getAttribute('data-drag-col');
+        const draggedColId = state.draggedColId;
+
+        if (draggedColId && targetColId && draggedColId !== targetColId) {
+          const fromIdx = state.columns.findIndex((c) => c.id === draggedColId);
+          const toIdx = state.columns.findIndex((c) => c.id === targetColId);
           if (fromIdx !== -1 && toIdx !== -1) {
-            const reordered = [...state.columns];
-            const [moved] = reordered.splice(fromIdx, 1);
-            reordered.splice(toIdx, 0, moved);
-            setStoredColumns(reordered);
+            const [moved] = state.columns.splice(fromIdx, 1);
+            state.columns.splice(toIdx, 0, moved);
+            api.syncBoardConfigToGroup();
             renderKanbanView();
           }
         }
-      });
+      };
+    });
+  }
+
+  function saveInlineTask(colId) {
+    const input = document.getElementById(`inline-input-${colId}`);
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+
+    state.activeInlineCol = null;
+    api.createTask(text, '', colId);
+  }
+
+  function showContextMenu(x, y, task) {
+    closeActiveContextMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'kanban-context-menu';
+    menu.id = 'kanban-active-context-menu';
+
+    const colSubItems = state.columns
+      .filter((c) => c.id !== task.col)
+      .map(
+        (c) => `
+        <div class="kanban-context-item" data-ctx-move="${c.id}">
+          ${ICONS.move} Move to "${escapeHtml(c.title)}"
+        </div>
+      `
+      )
+      .join('');
+
+    menu.innerHTML = `
+      <div class="kanban-context-item" data-ctx-action="edit">
+        ${ICONS.edit} Edit Task
+      </div>
+      ${colSubItems ? `<div class="kanban-context-divider"></div>${colSubItems}` : ''}
+      <div class="kanban-context-divider"></div>
+      <div class="kanban-context-item is-danger" data-ctx-action="delete">
+        ${ICONS.trash} Delete Task
+      </div>
+    `;
+
+    document.body.appendChild(menu);
+
+    const menuWidth = 200;
+    const menuHeight = menu.offsetHeight || 160;
+    const posX = x + menuWidth > window.innerWidth ? window.innerWidth - menuWidth - 10 : x;
+    const posY = y + menuHeight > window.innerHeight ? window.innerHeight - menuHeight - 10 : y;
+
+    menu.style.left = `${posX}px`;
+    menu.style.top = `${posY}px`;
+
+    menu.querySelectorAll('[data-ctx-move]').forEach((item) => {
+      item.onclick = async (e) => {
+        e.stopPropagation();
+        const targetCol = item.getAttribute('data-ctx-move');
+        closeActiveContextMenu();
+        await api.updateTaskMeta(task, { col: targetCol });
+      };
+    });
+
+    const editBtn = menu.querySelector('[data-ctx-action="edit"]');
+    if (editBtn) {
+      editBtn.onclick = (e) => {
+        e.stopPropagation();
+        closeActiveContextMenu();
+        showTaskModal(task);
+      };
     }
+
+    const delBtn = menu.querySelector('[data-ctx-action="delete"]');
+    if (delBtn) {
+      delBtn.onclick = async (e) => {
+        e.stopPropagation();
+        closeActiveContextMenu();
+        await api.deleteTask(task);
+      };
+    }
+
+    const dismiss = () => {
+      closeActiveContextMenu();
+      document.removeEventListener('click', dismiss);
+    };
+    setTimeout(() => document.addEventListener('click', dismiss), 10);
+  }
+
+  function closeActiveContextMenu() {
+    const existing = document.getElementById('kanban-active-context-menu');
+    if (existing) existing.remove();
   }
 
   function showTaskModal(task = null, defaultCol = null) {
@@ -1760,6 +2290,7 @@
       .join('');
 
     let coverFileSelected = null;
+    state.modalDescTab = 'write';
 
     modalBackdrop.innerHTML = `
       <div class="kanban-modal" onclick="event.stopPropagation()">
@@ -1773,8 +2304,19 @@
             <input type="text" class="kanban-form-input" id="task-title-input" placeholder="What needs to be done?" value="${escapeHtml(task?.title || '')}">
           </div>
           <div class="kanban-form-group">
-            <label class="kanban-form-label">Description</label>
-            <textarea class="kanban-form-textarea" id="task-desc-input" placeholder="Task details, links, acceptance criteria...">${escapeHtml(task?.description || '')}</textarea>
+            <div class="kanban-form-header-row">
+              <label class="kanban-form-label">Description (Markdown & Checklists)</label>
+              <div class="kanban-tab-toggle">
+                <button class="kanban-tab-btn is-active" id="modal-tab-write">Write</button>
+                <button class="kanban-tab-btn" id="modal-tab-preview">Preview</button>
+              </div>
+            </div>
+            <div id="modal-desc-write-wrap">
+              <textarea class="kanban-form-textarea" id="task-desc-input" placeholder="Task details, - [ ] checklist items, **bold**, *italic*, code...">${escapeHtml(task?.description || '')}</textarea>
+            </div>
+            <div id="modal-desc-preview-wrap" style="display:none;">
+              <div class="kanban-md-preview-pane" id="modal-md-preview-content"></div>
+            </div>
           </div>
           <div style="display:flex;gap:12px;">
             <div class="kanban-form-group" style="flex:1;">
@@ -1818,6 +2360,28 @@
     modalBackdrop.querySelector('#kanban-modal-close-btn').onclick = closeActiveModal;
     modalBackdrop.querySelector('#task-cancel-btn').onclick = closeActiveModal;
 
+    const tabWrite = modalBackdrop.querySelector('#modal-tab-write');
+    const tabPreview = modalBackdrop.querySelector('#modal-tab-preview');
+    const writeWrap = modalBackdrop.querySelector('#modal-desc-write-wrap');
+    const previewWrap = modalBackdrop.querySelector('#modal-desc-preview-wrap');
+    const previewContent = modalBackdrop.querySelector('#modal-md-preview-content');
+    const descInput = modalBackdrop.querySelector('#task-desc-input');
+
+    tabWrite.onclick = () => {
+      tabWrite.classList.add('is-active');
+      tabPreview.classList.remove('is-active');
+      writeWrap.style.display = 'block';
+      previewWrap.style.display = 'none';
+    };
+
+    tabPreview.onclick = () => {
+      tabPreview.classList.add('is-active');
+      tabWrite.classList.remove('is-active');
+      writeWrap.style.display = 'none';
+      previewWrap.style.display = 'block';
+      previewContent.innerHTML = renderMarkdown(descInput.value, task?.mid);
+    };
+
     const coverBox = modalBackdrop.querySelector('#task-cover-box');
     const fileInput = modalBackdrop.querySelector('#task-cover-file-input');
     coverBox.onclick = () => fileInput.click();
@@ -1831,10 +2395,8 @@
 
     if (isEdit) {
       modalBackdrop.querySelector('#task-delete-btn').onclick = async () => {
-        if (confirm(`Delete task "${task.title}"?`)) {
-          closeActiveModal();
-          await api.deleteTask(task);
-        }
+        closeActiveModal();
+        await api.deleteTask(task);
       };
     }
 
@@ -1871,50 +2433,41 @@
     modalBackdrop.className = 'kanban-modal-backdrop';
     modalBackdrop.id = 'kanban-active-modal';
 
-    function renderPriorityRows() {
-      return state.priorities
-        .map(
-          (p, idx) => `
-          <div class="kanban-prio-row" data-prio-idx="${idx}">
-            <input type="color" class="kanban-prio-color-box" value="${p.color}" data-color-idx="${idx}">
-            <input type="text" class="kanban-form-input" style="flex:1;padding:4px 8px;font-size:13px;" value="${escapeHtml(p.label)}" data-label-idx="${idx}">
-            <button class="kanban-column-menu-btn" data-delete-prio="${idx}" title="Delete priority">${ICONS.trash}</button>
-          </div>
-        `
-        )
-        .join('');
-    }
-
     modalBackdrop.innerHTML = `
-      <div class="kanban-modal" onclick="event.stopPropagation()">
+      <div class="kanban-modal" style="width:620px;" onclick="event.stopPropagation()">
         <div class="kanban-modal-header">
-          <span>Kanban Board Settings</span>
-          <button class="kanban-modal-close" id="kanban-modal-close-btn">${ICONS.close}</button>
+          <span>Boards & Settings</span>
+          <button class="kanban-modal-close" id="settings-close-btn">${ICONS.close}</button>
         </div>
         <div class="kanban-modal-body">
           <div class="kanban-form-group">
-            <label class="kanban-form-label">Telegram Database Group (Peer ID)</label>
-            <input type="text" class="kanban-form-input" id="settings-peer-input" value="${state.peerId}">
-            <div style="font-size:11.5px;color:var(--secondary-text-color, rgba(255,255,255,0.5));line-height:1.4;">
-              Specify Telegram group Peer ID (e.g. <code>-1002358826579</code> or <code>-2358826579</code>).
+            <label class="kanban-form-label">Active Kanban Boards</label>
+            <div class="kanban-settings-boards-list" id="settings-boards-list"></div>
+          </div>
+
+          <div class="kanban-form-group" style="padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid var(--border-color, rgba(255,255,255,0.06));">
+            <label class="kanban-form-label" style="margin-bottom:6px;">Add Board by Link / ID</label>
+            <div style="display:flex;gap:8px;">
+              <input type="text" class="kanban-form-input" id="settings-new-board-link" placeholder="e.g. https://t.me/c/2482353775/4170 or -100...:topic" style="flex:2;">
+              <input type="text" class="kanban-form-input" id="settings-new-board-name" placeholder="Board Name (optional)" style="flex:1;">
+              <button class="kanban-btn" id="settings-add-board-btn" style="flex-shrink:0;">${ICONS.plus} Add</button>
+            </div>
+            <div style="font-size:11px;color:var(--secondary-text-color, #a89984);margin-top:4px;">
+              Board IDs and topics are synced directly to your Saved Messages.
             </div>
           </div>
+
           <div class="kanban-form-group">
-            <div style="display:flex;align-items:center;justify-content:space-between;">
-              <label class="kanban-form-label">Priority Levels</label>
-              <button class="kanban-btn kanban-btn-secondary" style="padding:2px 8px;font-size:11px;" id="settings-add-prio-btn">${ICONS.plus} Add Priority</button>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <label class="kanban-form-label">Custom Priorities</label>
+              <button class="kanban-btn kanban-btn-secondary" id="settings-add-prio-btn" style="padding:2px 8px;font-size:11px;height:24px;">+ Add Priority</button>
             </div>
-            <div id="settings-prios-list">
-              ${renderPriorityRows()}
-            </div>
+            <div id="settings-priorities-list" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;"></div>
           </div>
         </div>
         <div class="kanban-modal-footer">
           <div></div>
-          <div style="display:flex;gap:8px;">
-            <button class="kanban-btn kanban-btn-secondary" id="settings-cancel-btn">Cancel</button>
-            <button class="kanban-btn" id="settings-save-btn">Save Settings</button>
-          </div>
+          <button class="kanban-btn" id="settings-save-btn">Done</button>
         </div>
       </div>
     `;
@@ -1922,60 +2475,166 @@
     document.body.appendChild(modalBackdrop);
 
     modalBackdrop.onclick = closeActiveModal;
-    modalBackdrop.querySelector('#kanban-modal-close-btn').onclick = closeActiveModal;
-    modalBackdrop.querySelector('#settings-cancel-btn').onclick = closeActiveModal;
+    modalBackdrop.querySelector('#settings-close-btn').onclick = closeActiveModal;
+    modalBackdrop.querySelector('#settings-save-btn').onclick = closeActiveModal;
 
-    const priosList = modalBackdrop.querySelector('#settings-prios-list');
-    modalBackdrop.querySelector('#settings-add-prio-btn').onclick = () => {
-      const name = prompt('Priority label (e.g. Low, Critical):');
-      if (name && name.trim()) {
-        state.priorities.push({
-          id: 'prio_' + Date.now(),
-          label: name.trim(),
-          color: '#3390ec'
-        });
-        priosList.innerHTML = renderPriorityRows();
-        bindPrioEvents();
+    function renderBoardsList() {
+      const listEl = modalBackdrop.querySelector('#settings-boards-list');
+      if (!listEl) return;
+
+      listEl.innerHTML = state.boards
+        .map((b) => {
+          const rawId = Math.abs(b.peerId);
+          const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
+          const isCurrent = b.id === state.activeBoardId;
+          return `
+            <div class="kanban-settings-board-row">
+              <div style="display:flex;flex-direction:column;gap:2px;">
+                <div style="font-weight:600;font-size:13.5px;color:var(--text-color, #ebdbb2);">
+                  ${escapeHtml(b.title || 'Kanban')}
+                  ${isCurrent ? `<span style="font-size:11px;color:var(--accent-color, #7daea3);margin-left:6px;">(Active)</span>` : ''}
+                </div>
+                <div style="font-size:11px;color:var(--secondary-text-color, #a89984);">${escapeHtml(link)}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                ${
+                  !isCurrent
+                    ? `<button class="kanban-btn kanban-btn-secondary" style="padding:2px 8px;font-size:11px;height:26px;" data-switch-board="${b.id}">Switch</button>`
+                    : ''
+                }
+                ${
+                  state.boards.length > 1
+                    ? `<button class="kanban-btn kanban-btn-danger" style="padding:2px 8px;font-size:11px;height:26px;" data-del-board="${b.id}">${ICONS.trash}</button>`
+                    : ''
+                }
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+
+      listEl.querySelectorAll('[data-switch-board]').forEach((btn) => {
+        btn.onclick = async () => {
+          const bId = btn.getAttribute('data-switch-board');
+          await api.selectBoard(bId);
+          renderBoardsList();
+          renderKanbanView();
+        };
+      });
+
+      listEl.querySelectorAll('[data-del-board]').forEach((btn) => {
+        btn.onclick = async () => {
+          const bId = btn.getAttribute('data-del-board');
+          if (confirm('Remove this board from your registry?')) {
+            state.boards = state.boards.filter((b) => b.id !== bId);
+            await api.syncBoardsRegistryToSavedMessages();
+            if (state.activeBoardId === bId && state.boards.length > 0) {
+              await api.selectBoard(state.boards[0].id);
+            }
+            renderBoardsList();
+            renderSidebarTabs();
+            renderKanbanView();
+          }
+        };
+      });
+    }
+
+    renderBoardsList();
+
+    const addBoardBtn = modalBackdrop.querySelector('#settings-add-board-btn');
+    const newBoardLinkInput = modalBackdrop.querySelector('#settings-new-board-link');
+    const newBoardNameInput = modalBackdrop.querySelector('#settings-new-board-name');
+
+    addBoardBtn.onclick = async () => {
+      const linkVal = newBoardLinkInput.value.trim();
+      const customName = newBoardNameInput.value.trim();
+      if (!linkVal) return;
+
+      const target = parseBoardTarget(linkVal);
+      if (!target) {
+        alert('Invalid Telegram group/topic link or ID format.\nExample: https://t.me/c/2482353775/4170');
+        return;
       }
+
+      const boardId = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
+      const title = customName || (await api.resolveBoardTitle(target.peerId, target.topicId));
+
+      state.boards.push({
+        id: boardId,
+        peerId: target.peerId,
+        topicId: target.topicId,
+        title: title
+      });
+
+      await api.syncBoardsRegistryToSavedMessages();
+      await api.selectBoard(boardId);
+
+      newBoardLinkInput.value = '';
+      newBoardNameInput.value = '';
+      renderBoardsList();
+      renderSidebarTabs();
+      renderKanbanView();
     };
 
-    function bindPrioEvents() {
-      priosList.querySelectorAll('[data-delete-prio]').forEach((btn) => {
+    function renderPrioritiesList() {
+      const priosList = modalBackdrop.querySelector('#settings-priorities-list');
+      if (!priosList) return;
+
+      priosList.innerHTML = state.priorities
+        .map(
+          (p, idx) => `
+          <div style="display:flex;align-items:center;gap:8px;">
+            <input type="color" value="${p.color}" data-color-idx="${idx}" style="width:34px;height:34px;border:none;background:transparent;cursor:pointer;border-radius:4px;">
+            <input type="text" class="kanban-form-input" value="${escapeHtml(p.label)}" data-label-idx="${idx}" style="flex:1;height:34px;">
+            <button class="kanban-btn kanban-btn-danger" style="padding:4px 8px;height:34px;" data-del-prio="${idx}">${ICONS.trash}</button>
+          </div>
+        `
+        )
+        .join('');
+
+      priosList.querySelectorAll('[data-del-prio]').forEach((btn) => {
         btn.onclick = () => {
-          const idx = Number(btn.getAttribute('data-delete-prio'));
-          if (state.priorities.length <= 1) {
-            alert('At least one priority level is required.');
-            return;
-          }
+          const idx = Number(btn.getAttribute('data-del-prio'));
           state.priorities.splice(idx, 1);
-          priosList.innerHTML = renderPriorityRows();
-          bindPrioEvents();
+          api.syncBoardConfigToGroup();
+          renderPrioritiesList();
         };
       });
 
       priosList.querySelectorAll('[data-color-idx]').forEach((input) => {
         input.onchange = (e) => {
           const idx = Number(input.getAttribute('data-color-idx'));
-          if (state.priorities[idx]) state.priorities[idx].color = e.target.value;
+          if (state.priorities[idx]) {
+            state.priorities[idx].color = e.target.value;
+            api.syncBoardConfigToGroup();
+          }
         };
       });
 
       priosList.querySelectorAll('[data-label-idx]').forEach((input) => {
         input.oninput = (e) => {
           const idx = Number(input.getAttribute('data-label-idx'));
-          if (state.priorities[idx]) state.priorities[idx].label = e.target.value;
+          if (state.priorities[idx]) {
+            state.priorities[idx].label = e.target.value;
+            api.syncBoardConfigToGroup();
+          }
         };
       });
     }
 
-    bindPrioEvents();
+    renderPrioritiesList();
 
-    modalBackdrop.querySelector('#settings-save-btn').onclick = () => {
-      const peerRaw = modalBackdrop.querySelector('#settings-peer-input').value.trim();
-      setTargetPeerId(peerRaw);
-      setStoredPriorities([...state.priorities]);
-      closeActiveModal();
-      api.loadHistory(state.peerId);
+    modalBackdrop.querySelector('#settings-add-prio-btn').onclick = () => {
+      const label = prompt('Priority label:');
+      if (label && label.trim()) {
+        state.priorities.push({
+          id: 'prio_' + Date.now(),
+          label: label.trim(),
+          color: '#7daea3'
+        });
+        api.syncBoardConfigToGroup();
+        renderPrioritiesList();
+      }
     };
   }
 
@@ -1989,11 +2648,21 @@
     if (!rootScope || !rootScope.addEventListener) return;
 
     rootScope.addEventListener('message_edit', (e) => {
-      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
+      if (detail?.peerId === state.myId) {
+        api.loadBoardsRegistry();
+        return;
+      }
+
+      if (!state.isKanbanActive) return;
       if (detail?.peerId === state.peerId) {
         const msg = win.apiManagerProxy?.getMessageByPeer(state.peerId, detail.mid);
-        if (msg?.message && KANBAN_CONFIG_REGEX.test(msg.message)) {
+        if (!msg) return;
+
+        const msgThreadId = getMessageThreadId(msg);
+        if (state.topicId && msgThreadId && msgThreadId !== state.topicId) return;
+
+        if (msg.message && KANBAN_CONFIG_REGEX.test(msg.message)) {
           const match = msg.message.match(KANBAN_CONFIG_REGEX);
           if (match) {
             try {
@@ -2024,7 +2693,11 @@
       if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
-        const task = parseTaskFromMessage(detail.message);
+        const msg = detail.message;
+        const msgThreadId = getMessageThreadId(msg);
+        if (state.topicId && msgThreadId && msgThreadId !== state.topicId) return;
+
+        const task = parseTaskFromMessage(msg);
         if (task) {
           if (detail.tempId) {
             const existing = state.tasks.get(detail.tempId);
@@ -2045,7 +2718,11 @@
       if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
-        const task = parseTaskFromMessage(detail.message);
+        const msg = detail.message;
+        const msgThreadId = getMessageThreadId(msg);
+        if (state.topicId && msgThreadId && msgThreadId !== state.topicId) return;
+
+        const task = parseTaskFromMessage(msg);
         if (task) {
           const existing = state.tasks.get(task.mid);
           if (existing?.coverUrl) task.coverUrl = existing.coverUrl;
@@ -2075,10 +2752,52 @@
     });
   }
 
+  function setupGlobalChecklistListener() {
+    document.addEventListener('click', (e) => {
+      const checkbox = e.target.closest('.kanban-checklist-checkbox');
+      if (!checkbox) return;
+      e.stopPropagation();
+
+      const row = checkbox.closest('.kanban-checklist-row');
+      if (!row) return;
+
+      const taskMid = row.dataset.taskMid;
+      const lineIdx = Number(row.dataset.lineIndex);
+      if (!taskMid || isNaN(lineIdx)) return;
+
+      const task = state.tasks.get(Number(taskMid)) || state.tasks.get(taskMid);
+      if (!task || !task.description) return;
+
+      const lines = task.description.split('\n');
+      if (lineIdx >= 0 && lineIdx < lines.length) {
+        const curLine = lines[lineIdx];
+        let isNowChecked = false;
+        if (curLine.match(/^(\s*[-*]\s+\[) \](\s+.*)$/)) {
+          lines[lineIdx] = curLine.replace(/^(\s*[-*]\s+\[) \](\s+.*)$/, '$1x]$2');
+          isNowChecked = true;
+        } else if (curLine.match(/^(\s*[-*]\s+\[)[xX]\](\s+.*)$/)) {
+          lines[lineIdx] = curLine.replace(/^(\s*[-*]\s+\[)[xX]\](\s+.*)$/, '$1 ]$2');
+          isNowChecked = false;
+        }
+
+        const newDesc = lines.join('\n');
+        task.description = newDesc;
+        api.updateTaskMeta(task, {}, undefined, newDesc);
+
+        checkbox.checked = isNowChecked;
+        row.classList.toggle('is-checked', isNowChecked);
+        const textSpan = row.querySelector('.kanban-checklist-text');
+        if (textSpan) {
+          textSpan.classList.toggle('strikethrough', isNowChecked);
+        }
+      }
+    });
+  }
+
   function init() {
     injectStyles();
+    setupGlobalChecklistListener();
 
-    // Check for pending outbox retry every 5 seconds
     setInterval(() => {
       if (state.isKanbanActive && !state.isProcessingOutbox && state.outbox.length > 0) {
         api.processOutbox();
@@ -2089,15 +2808,20 @@
       api.processOutbox();
     });
 
+    let isRegistryLoaded = false;
     const interval = setInterval(() => {
       if (win.rootScope?.managers?.appMessagesManager && win.apiManagerProxy) {
-        injectSidebarTab();
-        setupRealtimeListeners();
+        if (!isRegistryLoaded) {
+          isRegistryLoaded = true;
+          api.loadBoardsRegistry();
+          setupRealtimeListeners();
+        }
+        renderSidebarTabs();
       }
     }, 1000);
 
     const observer = new MutationObserver(() => {
-      injectSidebarTab();
+      renderSidebarTabs();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
