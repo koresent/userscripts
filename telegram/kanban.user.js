@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Kanban Board
 // @namespace      github.com/koresent/userscripts
-// @version        2.2.0
+// @version        2.3.0
 // @description    Native multi-board Kanban inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
 // @author         Koresent
 // @license        GPL-3.0
@@ -38,8 +38,59 @@
   ];
 
   const KANBAN_BLOCK_REGEX = /\n*---\n*<!--kanban:(.*?)-->\s*$/s;
-  const KANBAN_CONFIG_REGEX = /<!--kanban-config:(.*?)-->/s;
+  const KANBAN_CONFIG_REGEX = /<!--kanban-config:(.*?)(?:-->|$)/s;
   const KANBAN_BOARDS_REGEX = /<!--kanban-boards:(.*?)-->/s;
+
+  function parseConfigJson(rawJson) {
+    if (!rawJson) return null;
+    let str = rawJson.trim();
+    if (str.endsWith('-->')) str = str.slice(0, -3).trim();
+
+    try {
+      return JSON.parse(str);
+    } catch (_) {}
+
+    try {
+      let repaired = str;
+      let inQuote = false;
+      for (let i = 0; i < repaired.length; i++) {
+        const c = repaired[i];
+        if (c === '\\' && inQuote) {
+          i++;
+          continue;
+        }
+        if (c === '"') inQuote = !inQuote;
+      }
+      if (inQuote) repaired += '"';
+
+      const stack = [];
+      inQuote = false;
+      for (let i = 0; i < repaired.length; i++) {
+        const c = repaired[i];
+        if (c === '\\' && inQuote) {
+          i++;
+          continue;
+        }
+        if (c === '"') {
+          inQuote = !inQuote;
+          continue;
+        }
+        if (!inQuote) {
+          if (c === '{' || c === '[') stack.push(c);
+          else if (c === '}' && stack.length && stack[stack.length - 1] === '{') stack.pop();
+          else if (c === ']' && stack.length && stack[stack.length - 1] === '[') stack.pop();
+        }
+      }
+      while (stack.length > 0) {
+        const open = stack.pop();
+        if (open === '{') repaired += '}';
+        else if (open === '[') repaired += ']';
+      }
+      return JSON.parse(repaired);
+    } catch (_) {
+      return null;
+    }
+  }
 
   const ICONS = {
     kanban: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M4 4h4v16H4V4zm6 0h4v11h-4V4zm6 0h4v7h-4V4z"/></svg>`,
@@ -92,15 +143,22 @@
     return null;
   }
 
-  function getMessageThreadId(msg) {
+  function getMessageThreadId(msg, peerId) {
     if (!msg) return null;
     if (msg.saved_peer_id) return msg.saved_peer_id;
     const replyTo = msg.reply_to;
     if (replyTo?._ === 'messageReplyHeader') {
-      return replyTo.reply_to_top_id || replyTo.reply_to_msg_id || null;
+      const topMid = replyTo.reply_to_top_id || replyTo.reply_to_msg_id;
+      if (topMid) {
+        if (peerId && win.apiManagerProxy) {
+          const topMsg = win.apiManagerProxy.getMessageByPeer(peerId, topMid);
+          if (topMsg?.id) return topMsg.id;
+        }
+        return topMid;
+      }
     }
     if (msg._ === 'messageService' && msg.action?._ === 'messageActionTopicCreate') {
-      return msg.mid || msg.id || null;
+      return msg.id || msg.mid || null;
     }
     return null;
   }
@@ -290,14 +348,16 @@
       try {
         const match = text.match(KANBAN_CONFIG_REGEX);
         if (match) {
-          const parsed = JSON.parse(match[1]);
-          if (Array.isArray(parsed.columns) && parsed.columns.length > 0) {
-            state.columns = parsed.columns;
+          const parsed = parseConfigJson(match[1]);
+          if (parsed) {
+            if (Array.isArray(parsed.columns) && parsed.columns.length > 0) {
+              state.columns = parsed.columns;
+            }
+            if (Array.isArray(parsed.priorities) && parsed.priorities.length > 0) {
+              state.priorities = parsed.priorities;
+            }
+            state.configMid = msg.mid || msg.id;
           }
-          if (Array.isArray(parsed.priorities) && parsed.priorities.length > 0) {
-            state.priorities = parsed.priorities;
-          }
-          state.configMid = msg.mid || msg.id;
         }
       } catch (_) {}
       return null;
@@ -340,7 +400,7 @@
       }
     }
 
-    const threadId = getMessageThreadId(msg);
+    const threadId = getMessageThreadId(msg, msg.peer_id || state.peerId);
 
     return {
       mid: msg.mid || msg.id,
@@ -367,17 +427,14 @@
     return `${body}\n\n---\n<!--kanban:${jsonStr}-->`;
   }
 
-  function ensureChatStub(peerId) {
+  async function ensureChatLoaded(peerId) {
     if (!peerId || peerId > 0) return;
     const chatId = Math.abs(peerId);
     const cm = win.rootScope?.managers?.appChatsManager;
-    if (cm && !cm.getChat(chatId)) {
-      cm.chats[chatId] = {
-        id: chatId,
-        pFlags: {},
-        admin_rights: { pFlags: {} },
-        _: 'channel'
-      };
+    if (cm && typeof cm.getChat === 'function') {
+      try {
+        await cm.getChat(chatId);
+      } catch (_) {}
     }
   }
 
@@ -430,65 +487,82 @@
         const history = res.history || [];
         let foundBoards = [];
 
-        // 1. Check for JSON boards manifest in Saved Messages
         for (const mid of history) {
           const raw = apiProxy.getMessageByPeer(myId, mid);
-          if (raw?.message && KANBAN_BOARDS_REGEX.test(raw.message)) {
-            state.boardsRegistryMid = raw.mid || raw.id;
-            try {
-              const match = raw.message.match(KANBAN_BOARDS_REGEX);
-              const parsed = JSON.parse(match[1]);
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                foundBoards = parsed
-                  .map((b) => ({
-                    id: b.id || 'board_' + (b.topicId ? `${b.peerId}_${b.topicId}` : b.peerId),
-                    peerId: normalizePeerId(b.peerId),
-                    topicId: b.topicId ? Number(b.topicId) : null,
-                    title: b.title || null
-                  }))
-                  .filter((b) => b.peerId !== null);
-              }
-            } catch (_) {}
-            break;
-          }
-        }
+          if (raw?.message) {
+            const hasTag = KANBAN_BOARDS_REGEX.test(raw.message);
+            const lines = raw.message.split('\n');
+            const hasLinks = lines.some((l) => parseBoardTarget(l) !== null);
 
-        // 2. Check for plain links in Saved Messages if no manifest JSON was found
-        if (foundBoards.length === 0) {
-          for (const mid of history) {
-            const raw = apiProxy.getMessageByPeer(myId, mid);
-            if (raw?.message) {
-              const lines = raw.message.split('\n');
+            if (hasTag || hasLinks) {
+              state.boardsRegistryMid = raw.mid || raw.id;
+
+              let jsonBoards = [];
+              if (hasTag) {
+                try {
+                  const match = raw.message.match(KANBAN_BOARDS_REGEX);
+                  const parsed = JSON.parse(match[1]);
+                  if (Array.isArray(parsed)) {
+                    jsonBoards = parsed;
+                  }
+                } catch (_) {}
+              }
+
               for (const line of lines) {
                 const target = parseBoardTarget(line);
                 if (target) {
                   const id = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
                   if (!foundBoards.some((b) => b.id === id)) {
                     let title = null;
-                    const mPre = line.match(/^[•\-*]?\s*([^:]+):\s*https?:\/\//i);
-                    const mMd = line.match(/^[•\-*]?\s*\[([^\]]+)\]\(https?:\/\//i);
-                    const mSuf = line.match(/https?:\/\/\S+\s*[-–—]\s*(.+)$/i);
-                    if (mPre) {
-                      title = mPre[1].trim();
-                    } else if (mMd) {
-                      title = mMd[1].trim();
-                    } else if (mSuf) {
-                      title = mSuf[1].trim();
+                    const jsonMatch = jsonBoards.find(
+                      (jb) => normalizePeerId(jb.peerId) === target.peerId && (jb.topicId ? Number(jb.topicId) : null) === target.topicId
+                    );
+                    if (jsonMatch?.title) {
+                      title = jsonMatch.title;
+                    } else {
+                      const mPre = line.match(/^[•\-*]?\s*([^:]+):\s*https?:\/\//i);
+                      const mMd = line.match(/^[•\-*]?\s*\[([^\]]+)\]\(https?:\/\//i);
+                      const mSuf = line.match(/https?:\/\/\S+\s*[-–—]\s*(.+)$/i);
+                      if (mPre) title = mPre[1].trim();
+                      else if (mMd) title = mMd[1].trim();
+                      else if (mSuf) title = mSuf[1].trim();
                     }
+
                     foundBoards.push({
                       id,
                       peerId: target.peerId,
                       topicId: target.topicId,
-                      title: title
+                      title: title,
+                      iconEmojiId: jsonMatch?.iconEmojiId || null,
+                      emojiRaw: jsonMatch?.emojiRaw || null
                     });
                   }
                 }
+              }
+
+              for (const jb of jsonBoards) {
+                const normPeer = normalizePeerId(jb.peerId);
+                const normTopic = jb.topicId ? Number(jb.topicId) : null;
+                const id = jb.id || 'board_' + (normTopic ? `${normPeer}_${normTopic}` : normPeer);
+                if (normPeer !== null && !foundBoards.some((b) => b.id === id)) {
+                  foundBoards.push({
+                    id,
+                    peerId: normPeer,
+                    topicId: normTopic,
+                    title: jb.title || null,
+                    iconEmojiId: jb.iconEmojiId || null,
+                    emojiRaw: jb.emojiRaw || null
+                  });
+                }
+              }
+
+              if (foundBoards.length > 0 || hasTag) {
+                break;
               }
             }
           }
         }
 
-        // 3. If no boards registry message exists at all, initialize an empty template message once
         if (!state.boardsRegistryMid && foundBoards.length === 0) {
           const initialText = `📋 Telegram Kanban Boards Registry\nAdd your board links here (e.g. https://t.me/c/<channel_id>/<topic_id>):\n\n---\n<!--kanban-boards:[]-->`;
           const sent = await mm.sendText({
@@ -501,6 +575,58 @@
         }
 
         state.boards = foundBoards;
+
+        const pm = win.rootScope?.managers?.appPeersManager;
+        const am = win.rootScope?.managers?.apiManager;
+        const em = win.rootScope?.managers?.appEmojiManager;
+
+        for (const b of state.boards) {
+          if (b.peerId) {
+            await ensureChatLoaded(b.peerId);
+          }
+        }
+
+        const peerTopicMap = new Map();
+        for (const b of state.boards) {
+          if (b.peerId && b.topicId) {
+            if (!peerTopicMap.has(b.peerId)) {
+              peerTopicMap.set(b.peerId, []);
+            }
+            peerTopicMap.get(b.peerId).push(b);
+          }
+        }
+
+        if (pm && am) {
+          for (const [peerId, topicBoards] of peerTopicMap.entries()) {
+            try {
+              const inputPeer = await pm.getInputPeerById(peerId);
+              if (inputPeer) {
+                const topicIds = topicBoards.map((b) => b.topicId);
+                const res = await am.invokeApi('messages.getForumTopicsByID', {
+                  peer: inputPeer,
+                  topics: topicIds
+                });
+                for (const t of res?.topics || []) {
+                  const b = topicBoards.find((tb) => tb.topicId === t.id);
+                  if (b) {
+                    if (t.title) b.title = t.title;
+                    if (t.icon_emoji_id) {
+                      b.iconEmojiId = String(t.icon_emoji_id);
+                      if (em) {
+                        try {
+                          const doc = await em.getCustomEmojiDocument(b.iconEmojiId);
+                          b.emojiRaw = doc?.stickerEmojiRaw || null;
+                        } catch (_) {}
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (topicErr) {
+              console.warn('[Kanban] Failed to fetch forum topics for peer:', peerId, topicErr);
+            }
+          }
+        }
 
         for (const b of state.boards) {
           if (!b.title) {
@@ -527,20 +653,16 @@
     },
 
     async resolveBoardTitle(peerId, topicId) {
-      const { apiProxy } = this.getManagers();
-      const ds = win.rootScope?.managers?.dialogsStorage;
-
-      if (topicId && ds?.getForumTopic) {
-        const topic = ds.getForumTopic(peerId, topicId);
-        if (topic?.title) return topic.title;
-      }
-
       const chatId = Math.abs(peerId);
-      const chat = apiProxy?.getChat?.(chatId);
-      if (chat?.title) {
-        return topicId ? `${chat.title} (#${topicId})` : chat.title;
+      const cm = win.rootScope?.managers?.appChatsManager;
+      if (cm) {
+        try {
+          const chat = await cm.getChat(chatId);
+          if (chat?.title) {
+            return topicId ? `${chat.title} (#${topicId})` : chat.title;
+          }
+        } catch (_) {}
       }
-
       return topicId ? `Topic #${topicId}` : `Board ${chatId}`;
     },
 
@@ -617,7 +739,7 @@
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !apiProxy || !peerId) return;
 
-      ensureChatStub(peerId);
+      await ensureChatLoaded(peerId);
       try {
         const pinned = await mm.getPinnedMessage(peerId, topicId || undefined);
         let configMsg = null;
@@ -632,14 +754,16 @@
         if (configMsg) {
           const match = configMsg.message.match(KANBAN_CONFIG_REGEX);
           if (match) {
-            const parsed = JSON.parse(match[1]);
-            if (Array.isArray(parsed.columns) && parsed.columns.length > 0) {
-              state.columns = parsed.columns;
+            const parsed = parseConfigJson(match[1]);
+            if (parsed) {
+              if (Array.isArray(parsed.columns) && parsed.columns.length > 0) {
+                state.columns = parsed.columns;
+              }
+              if (Array.isArray(parsed.priorities) && parsed.priorities.length > 0) {
+                state.priorities = parsed.priorities;
+              }
+              state.configMid = configMsg.mid || configMsg.id;
             }
-            if (Array.isArray(parsed.priorities) && parsed.priorities.length > 0) {
-              state.priorities = parsed.priorities;
-            }
-            state.configMid = configMsg.mid || configMsg.id;
           }
         }
       } catch (err) {
@@ -651,7 +775,7 @@
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !state.peerId) return;
 
-      ensureChatStub(state.peerId);
+      await ensureChatLoaded(state.peerId);
       const payload = {
         columns: state.columns,
         priorities: state.priorities,
@@ -689,7 +813,7 @@
       const { mm, apiProxy } = this.getManagers();
       if (!mm || !apiProxy || !peerId) return;
 
-      ensureChatStub(peerId);
+      await ensureChatLoaded(peerId);
       state.isLoading = true;
       renderKanbanView();
 
@@ -719,7 +843,10 @@
             const task = parseTaskFromMessage(rawMsg);
             if (task) {
               if (topicId && task.threadId && task.threadId !== topicId) {
-                continue;
+                const topMsg = apiProxy.getMessageByPeer(peerId, task.threadId);
+                if (topMsg && topMsg.id !== topicId) {
+                  continue;
+                }
               }
               const existing = state.tasks.get(task.mid);
               if (existing?.coverUrl) task.coverUrl = existing.coverUrl;
@@ -769,7 +896,7 @@
       const { mm } = this.getManagers();
       if (!mm || !state.peerId) return;
 
-      ensureChatStub(state.peerId);
+      await ensureChatLoaded(state.peerId);
       const colTasks = Array.from(state.tasks.values())
         .filter((t) => t.col === col)
         .sort((a, b) => a.pos - b.pos);
@@ -856,7 +983,7 @@
       const { mm } = this.getManagers();
       if (!mm) return;
 
-      ensureChatStub(state.peerId);
+      await ensureChatLoaded(state.peerId);
       const title = newTitle !== undefined ? newTitle : task.title;
       const desc = newDescription !== undefined ? newDescription : task.description;
       const meta = {
@@ -1128,13 +1255,14 @@
       padding: 8px 16px 16px 16px;
       overflow-x: auto;
       overflow-y: hidden;
-      align-items: flex-start;
+      align-items: stretch;
       box-sizing: border-box;
     }
 
     .kanban-column {
       width: 320px;
       min-width: 320px;
+      height: 100%;
       max-height: 100%;
       background: var(--surface-color, #282828);
       border-radius: 12px;
@@ -1144,6 +1272,7 @@
       border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
       overflow: hidden;
       position: relative;
+      box-sizing: border-box;
     }
 
     .kanban-column-header {
@@ -1486,6 +1615,7 @@
       width: 44px;
       min-width: 44px;
       height: 44px;
+      align-self: flex-start;
       background: rgba(255, 255, 255, 0.04);
       border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.1));
       border-radius: 12px;
@@ -1812,7 +1942,7 @@
       return;
     }
 
-    const renderedKey = state.boards.map((b) => `${b.id}:${b.title}`).join('|') + `|active:${state.activeBoardId}|isKanban:${state.isKanbanActive}`;
+    const renderedKey = state.boards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeBoardId}|isKanban:${state.isKanbanActive}`;
     if (group.dataset.renderedKey === renderedKey) {
       return;
     }
@@ -1822,11 +1952,14 @@
       .map((b) => {
         const isSelected = state.isKanbanActive && state.activeBoardId === b.id;
         const shortTitle = b.title ? (b.title.length > 8 ? b.title.slice(0, 7) + '…' : b.title) : 'Kanban';
+        const iconHtml = b.emojiRaw
+          ? `<span style="font-size:20px;line-height:24px;display:flex;align-items:center;justify-content:center;">${b.emojiRaw}</span>`
+          : ICONS.kanban;
         return `
           <div class="folders-sidebar__folder-item rp kanban-board-tab ${isSelected ? 'folders-sidebar__folder-item--selected' : ''}"
                role="tab" tabindex="0" data-board-id="${b.id}" title="${escapeHtml(b.title || 'Kanban')}">
             <div class="folders-sidebar__folder-item-icon" style="display:flex;align-items:center;justify-content:center;">
-              ${ICONS.kanban}
+              ${iconHtml}
             </div>
             <div class="folders-sidebar__folder-item-name">${escapeHtml(shortTitle)}</div>
           </div>
@@ -1906,12 +2039,15 @@
 
     const currentBoard = state.boards.find((b) => b.id === state.activeBoardId);
     const boardTitle = currentBoard?.title || 'Kanban';
+    const headerIcon = currentBoard?.emojiRaw
+      ? `<span style="font-size:16px;line-height:1;display:inline-flex;align-items:center;">${currentBoard.emojiRaw}</span>`
+      : ICONS.kanban;
 
     container.innerHTML = `
       <div class="kanban-header">
         <div class="kanban-header-left">
           <div class="kanban-board-title-badge" title="Active Kanban Board">
-            ${ICONS.kanban}
+            ${headerIcon}
             <span>${escapeHtml(boardTitle)}</span>
           </div>
           <input type="text" class="kanban-search-input" id="kanban-search" placeholder="Search tasks..." value="${escapeHtml(state.filterText)}">
@@ -2560,32 +2696,22 @@
     modalBackdrop.id = 'kanban-active-modal';
 
     modalBackdrop.innerHTML = `
-      <div class="kanban-modal" style="width:620px;" onclick="event.stopPropagation()">
+      <div class="kanban-modal" style="width:480px;" onclick="event.stopPropagation()">
         <div class="kanban-modal-header">
-          <span>Boards & Settings</span>
+          <span>Board Settings</span>
           <button class="kanban-modal-close" id="settings-close-btn">${ICONS.close}</button>
         </div>
         <div class="kanban-modal-body">
-          <div class="kanban-form-group">
-            <label class="kanban-form-label">Active Kanban Boards</label>
-            <div class="kanban-settings-boards-list" id="settings-boards-list"></div>
-          </div>
-
-          <div class="kanban-form-group" style="padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid var(--border-color, rgba(255,255,255,0.06));">
-            <label class="kanban-form-label" style="margin-bottom:6px;">Add Board by Link / ID</label>
-            <div style="display:flex;gap:8px;">
-              <input type="text" class="kanban-form-input" id="settings-new-board-link" placeholder="e.g. https://t.me/c/2482353775/4170" style="flex:2;">
-              <input type="text" class="kanban-form-input" id="settings-new-board-name" placeholder="Board Name (optional)" style="flex:1;">
-              <button class="kanban-btn" id="settings-add-board-btn" style="flex-shrink:0;">${ICONS.plus} Add</button>
-            </div>
-          </div>
-
           <div class="kanban-form-group">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <label class="kanban-form-label">Custom Priorities</label>
               <button class="kanban-btn kanban-btn-secondary" id="settings-add-prio-btn" style="padding:2px 8px;font-size:11px;height:24px;">+ Add Priority</button>
             </div>
             <div id="settings-priorities-list" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;"></div>
+          </div>
+
+          <div style="margin-top:16px;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid var(--border-color, rgba(255,255,255,0.06));font-size:12px;color:var(--secondary-text-color, #a89984);line-height:1.5;">
+            Kanban boards and topics are managed automatically via links in your Saved Messages.
           </div>
         </div>
         <div class="kanban-modal-footer">
@@ -2600,104 +2726,6 @@
     modalBackdrop.onclick = closeActiveModal;
     modalBackdrop.querySelector('#settings-close-btn').onclick = closeActiveModal;
     modalBackdrop.querySelector('#settings-save-btn').onclick = closeActiveModal;
-
-    function renderBoardsList() {
-      const listEl = modalBackdrop.querySelector('#settings-boards-list');
-      if (!listEl) return;
-
-      listEl.innerHTML = state.boards
-        .map((b) => {
-          const rawId = Math.abs(b.peerId);
-          const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
-          const isCurrent = b.id === state.activeBoardId;
-          return `
-            <div class="kanban-settings-board-row">
-              <div style="display:flex;flex-direction:column;gap:2px;">
-                <div style="font-weight:600;font-size:13.5px;color:var(--text-color, #ebdbb2);">
-                  ${escapeHtml(b.title || 'Kanban')}
-                  ${isCurrent ? `<span style="font-size:11px;color:var(--accent-color, #7daea3);margin-left:6px;">(Active)</span>` : ''}
-                </div>
-                <div style="font-size:11px;color:var(--secondary-text-color, #a89984);">${escapeHtml(link)}</div>
-              </div>
-              <div style="display:flex;align-items:center;gap:6px;">
-                ${
-                  !isCurrent
-                    ? `<button class="kanban-btn kanban-btn-secondary" style="padding:2px 8px;font-size:11px;height:26px;" data-switch-board="${b.id}">Switch</button>`
-                    : ''
-                }
-                ${
-                  state.boards.length > 1
-                    ? `<button class="kanban-btn kanban-btn-danger" style="padding:2px 8px;font-size:11px;height:26px;" data-del-board="${b.id}">${ICONS.trash}</button>`
-                    : ''
-                }
-              </div>
-            </div>
-          `;
-        })
-        .join('');
-
-      listEl.querySelectorAll('[data-switch-board]').forEach((btn) => {
-        btn.onclick = async () => {
-          const bId = btn.getAttribute('data-switch-board');
-          await api.selectBoard(bId);
-          renderBoardsList();
-          renderKanbanView();
-        };
-      });
-
-      listEl.querySelectorAll('[data-del-board]').forEach((btn) => {
-        btn.onclick = async () => {
-          const bId = btn.getAttribute('data-del-board');
-          if (confirm('Remove this board from your registry?')) {
-            state.boards = state.boards.filter((b) => b.id !== bId);
-            await api.syncBoardsRegistryToSavedMessages();
-            if (state.activeBoardId === bId && state.boards.length > 0) {
-              await api.selectBoard(state.boards[0].id);
-            }
-            renderBoardsList();
-            renderSidebarTabs();
-            renderKanbanView();
-          }
-        };
-      });
-    }
-
-    renderBoardsList();
-
-    const addBoardBtn = modalBackdrop.querySelector('#settings-add-board-btn');
-    const newBoardLinkInput = modalBackdrop.querySelector('#settings-new-board-link');
-    const newBoardNameInput = modalBackdrop.querySelector('#settings-new-board-name');
-
-    addBoardBtn.onclick = async () => {
-      const linkVal = newBoardLinkInput.value.trim();
-      const customName = newBoardNameInput.value.trim();
-      if (!linkVal) return;
-
-      const target = parseBoardTarget(linkVal);
-      if (!target) {
-        alert('Invalid Telegram group/topic link or ID format.\nExample: https://t.me/c/2482353775/4170');
-        return;
-      }
-
-      const boardId = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
-      const title = customName || (await api.resolveBoardTitle(target.peerId, target.topicId));
-
-      state.boards.push({
-        id: boardId,
-        peerId: target.peerId,
-        topicId: target.topicId,
-        title: title
-      });
-
-      await api.syncBoardsRegistryToSavedMessages();
-      await api.selectBoard(boardId);
-
-      newBoardLinkInput.value = '';
-      newBoardNameInput.value = '';
-      renderBoardsList();
-      renderSidebarTabs();
-      renderKanbanView();
-    };
 
     function renderPrioritiesList() {
       const priosList = modalBackdrop.querySelector('#settings-priorities-list');
@@ -2786,17 +2814,19 @@
         const msg = win.apiManagerProxy?.getMessageByPeer(state.peerId, detail.mid);
         if (!msg) return;
 
-        const msgThreadId = getMessageThreadId(msg);
+        const msgThreadId = getMessageThreadId(msg, state.peerId);
         if (state.topicId && msgThreadId && msgThreadId !== state.topicId) return;
 
         if (msg.message && KANBAN_CONFIG_REGEX.test(msg.message)) {
           const match = msg.message.match(KANBAN_CONFIG_REGEX);
           if (match) {
             try {
-              const parsed = JSON.parse(match[1]);
-              if (Array.isArray(parsed.columns)) state.columns = parsed.columns;
-              if (Array.isArray(parsed.priorities)) state.priorities = parsed.priorities;
-              renderKanbanView();
+              const parsed = parseConfigJson(match[1]);
+              if (parsed) {
+                if (Array.isArray(parsed.columns)) state.columns = parsed.columns;
+                if (Array.isArray(parsed.priorities)) state.priorities = parsed.priorities;
+                renderKanbanView();
+              }
             } catch (_) {}
           }
           return;
@@ -2821,7 +2851,7 @@
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
         const msg = detail.message;
-        const msgThreadId = getMessageThreadId(msg);
+        const msgThreadId = getMessageThreadId(msg, state.peerId);
         if (state.topicId && msgThreadId && msgThreadId !== state.topicId) return;
 
         const task = parseTaskFromMessage(msg);
@@ -2846,7 +2876,7 @@
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
         const msg = detail.message;
-        const msgThreadId = getMessageThreadId(msg);
+        const msgThreadId = getMessageThreadId(msg, state.peerId);
         if (state.topicId && msgThreadId && msgThreadId !== state.topicId) return;
 
         const task = parseTaskFromMessage(msg);
