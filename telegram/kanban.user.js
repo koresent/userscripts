@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Kanban Board
 // @namespace      github.com/koresent/userscripts
-// @version        2.1.0
+// @version        2.2.0
 // @description    Native multi-board Kanban inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
 // @author         Koresent
 // @license        GPL-3.0
@@ -379,6 +379,29 @@
         _: 'channel'
       };
     }
+  }
+
+  function getTelegramLimitInfo() {
+    const isPrem = !!(win.rootScope?.premium || win.rootScope?.currentUser?.is_premium);
+    const appCfg = win.apiManagerProxy?.getAppConfig?.() || {};
+    const defaultLimit = appCfg.caption_length_limit_default || 1024;
+    const premiumLimit = appCfg.caption_length_limit_premium || 4096;
+    const maxLimit = isPrem ? premiumLimit : defaultLimit;
+    return { isPrem, maxLimit, defaultLimit, premiumLimit };
+  }
+
+  function renderEditorBackdrop(text, limit) {
+    if (!text) return '';
+    const trailing = text.endsWith('\n') ? '<br>&nbsp;' : '';
+    if (limit <= 0) {
+      return `<mark class="kanban-overflow-mark">${escapeHtml(text)}${trailing}</mark>`;
+    }
+    if (text.length <= limit) {
+      return `<span style="color:transparent;">${escapeHtml(text)}${trailing}</span>`;
+    }
+    const safe = text.slice(0, limit);
+    const over = text.slice(limit);
+    return `<span style="color:transparent;">${escapeHtml(safe)}</span><mark class="kanban-overflow-mark">${escapeHtml(over)}${trailing}</mark>`;
   }
 
   const api = {
@@ -1606,24 +1629,102 @@
       border-color: var(--accent-color, #7daea3);
     }
 
-    .kanban-form-textarea {
+    .kanban-tier-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--secondary-text-color, #a89984);
+    }
+
+    .kanban-tier-badge.is-premium {
+      background: rgba(211, 134, 155, 0.2);
+      color: #d3869b;
+      border: 1px solid rgba(211, 134, 155, 0.4);
+    }
+
+    .kanban-char-counter {
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--secondary-text-color, #a89984);
+      transition: color 0.15s ease;
+    }
+
+    .kanban-char-counter.is-overflow {
+      color: #ea6962;
+      font-weight: 700;
+    }
+
+    .kanban-editor-container {
+      position: relative;
+      width: 100%;
       min-height: 240px;
       height: 240px;
       background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
       border-radius: 8px;
-      padding: 12px;
-      color: var(--text-color, #ebdbb2);
-      font-size: 13.5px;
-      outline: none;
-      resize: vertical;
-      font-family: inherit;
-      line-height: 1.5;
       box-sizing: border-box;
+      overflow: hidden;
+      transition: border-color 0.15s ease;
     }
 
-    .kanban-form-textarea:focus {
+    .kanban-editor-container:focus-within {
       border-color: var(--accent-color, #7daea3);
+    }
+
+    .kanban-editor-container.has-overflow {
+      border-color: #ea6962 !important;
+    }
+
+    .kanban-editor-backdrop,
+    .kanban-form-textarea {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 12px;
+      font-size: 13.5px;
+      line-height: 1.5;
+      box-sizing: border-box;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      word-break: break-word;
+      overflow-y: scroll;
+      border: none;
+      outline: none;
+    }
+
+    .kanban-editor-backdrop {
+      z-index: 1;
+      pointer-events: none;
+      color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+      background: transparent;
+      scrollbar-color: transparent transparent;
+    }
+
+    .kanban-form-textarea {
+      z-index: 2;
+      background: transparent !important;
+      color: var(--text-color, #ebdbb2);
+      resize: none;
+      font-family: inherit;
+    }
+
+    .kanban-overflow-mark {
+      background-color: rgba(234, 105, 98, 0.45);
+      color: transparent;
+      border-radius: 2px;
+      padding: 0;
+      margin: 0;
     }
 
     .kanban-md-preview-pane {
@@ -2220,6 +2321,7 @@
     closeActiveModal();
 
     const isEdit = !!task;
+    const limitInfo = getTelegramLimitInfo();
     const modalBackdrop = document.createElement('div');
     modalBackdrop.className = 'kanban-modal-backdrop';
     modalBackdrop.id = 'kanban-active-modal';
@@ -2252,14 +2354,25 @@
           </div>
           <div class="kanban-form-group">
             <div class="kanban-form-header-row">
-              <label class="kanban-form-label">Description (Markdown & Checklists)</label>
-              <div class="kanban-tab-toggle">
-                <button class="kanban-tab-btn is-active" id="modal-tab-write">Write</button>
-                <button class="kanban-tab-btn" id="modal-tab-preview">Preview</button>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <label class="kanban-form-label" style="margin-bottom:0;">Description (Markdown & Checklists)</label>
+                <span class="kanban-tier-badge ${limitInfo.isPrem ? 'is-premium' : ''}" id="kanban-tier-badge" title="Telegram caption limit: ${limitInfo.maxLimit} characters">
+                  ${limitInfo.isPrem ? 'Premium' : 'Free'}
+                </span>
+              </div>
+              <div style="display:flex;align-items:center;gap:12px;">
+                <span class="kanban-char-counter" id="kanban-char-counter">0 / 0 (0)</span>
+                <div class="kanban-tab-toggle">
+                  <button class="kanban-tab-btn is-active" id="modal-tab-write">Write</button>
+                  <button class="kanban-tab-btn" id="modal-tab-preview">Preview</button>
+                </div>
               </div>
             </div>
             <div id="modal-desc-write-wrap">
-              <textarea class="kanban-form-textarea" id="task-desc-input" placeholder="Task details, - [ ] checklist items, **bold**, *italic*, code...">${escapeHtml(task?.description || '')}</textarea>
+              <div class="kanban-editor-container" id="kanban-editor-box">
+                <div class="kanban-editor-backdrop" id="task-desc-backdrop"></div>
+                <textarea class="kanban-form-textarea" id="task-desc-input" placeholder="Task details, - [ ] checklist items, **bold**, *italic*, code...">${escapeHtml(task?.description || '')}</textarea>
+              </div>
             </div>
             <div id="modal-desc-preview-wrap" style="display:none;">
               <div class="kanban-md-preview-pane" id="modal-md-preview-content"></div>
@@ -2307,18 +2420,80 @@
     modalBackdrop.querySelector('#kanban-modal-close-btn').onclick = closeActiveModal;
     modalBackdrop.querySelector('#task-cancel-btn').onclick = closeActiveModal;
 
+    const titleInput = modalBackdrop.querySelector('#task-title-input');
+    const descInput = modalBackdrop.querySelector('#task-desc-input');
+    const descBackdrop = modalBackdrop.querySelector('#task-desc-backdrop');
+    const editorBox = modalBackdrop.querySelector('#kanban-editor-box');
+    const charCounter = modalBackdrop.querySelector('#kanban-char-counter');
+    const colSelect = modalBackdrop.querySelector('#task-col-select');
+    const prioSelect = modalBackdrop.querySelector('#task-prio-select');
+    const saveBtn = modalBackdrop.querySelector('#task-save-btn');
+
+    // Inherit textarea font into backdrop for exact glyph wrapping
+    const taStyle = window.getComputedStyle(descInput);
+    if (taStyle.fontFamily) {
+      descBackdrop.style.setProperty('font-family', taStyle.fontFamily, 'important');
+    }
+
+    function updateCounterAndHighlight() {
+      const titleVal = titleInput.value.trim();
+      const descVal = descInput.value;
+      const colVal = colSelect.value;
+      const prioVal = prioSelect.value;
+
+      const metaSample = { col: colVal, pos: task?.pos || 1000 };
+      if (prioVal) metaSample.prio = prioVal;
+
+      const overhead = serializeTaskCaption(titleVal || 'Task', '', metaSample).length + 1;
+      const maxDesc = Math.max(0, limitInfo.maxLimit - overhead);
+      const currentLen = descVal.length;
+      const remaining = maxDesc - currentLen;
+
+      charCounter.textContent = `${currentLen} / ${maxDesc} (${remaining})`;
+
+      if (remaining < 0) {
+        charCounter.classList.add('is-overflow');
+        editorBox.classList.add('has-overflow');
+        saveBtn.disabled = true;
+        saveBtn.style.opacity = '0.5';
+        saveBtn.style.cursor = 'not-allowed';
+        saveBtn.title = `Description exceeds Telegram caption limit by ${-remaining} characters`;
+      } else {
+        charCounter.classList.remove('is-overflow');
+        editorBox.classList.remove('has-overflow');
+        saveBtn.disabled = false;
+        saveBtn.style.opacity = '';
+        saveBtn.style.cursor = '';
+        saveBtn.removeAttribute('title');
+      }
+
+      descBackdrop.innerHTML = renderEditorBackdrop(descVal, maxDesc);
+      descBackdrop.scrollTop = descInput.scrollTop;
+    }
+
+    descInput.addEventListener('input', updateCounterAndHighlight);
+    descInput.addEventListener('scroll', () => {
+      descBackdrop.scrollTop = descInput.scrollTop;
+      descBackdrop.scrollLeft = descInput.scrollLeft;
+    });
+    titleInput.addEventListener('input', updateCounterAndHighlight);
+    colSelect.addEventListener('change', updateCounterAndHighlight);
+    prioSelect.addEventListener('change', updateCounterAndHighlight);
+
+    updateCounterAndHighlight();
+
     const tabWrite = modalBackdrop.querySelector('#modal-tab-write');
     const tabPreview = modalBackdrop.querySelector('#modal-tab-preview');
     const writeWrap = modalBackdrop.querySelector('#modal-desc-write-wrap');
     const previewWrap = modalBackdrop.querySelector('#modal-desc-preview-wrap');
     const previewContent = modalBackdrop.querySelector('#modal-md-preview-content');
-    const descInput = modalBackdrop.querySelector('#task-desc-input');
 
     tabWrite.onclick = () => {
       tabWrite.classList.add('is-active');
       tabPreview.classList.remove('is-active');
       writeWrap.style.display = 'block';
       previewWrap.style.display = 'none';
+      updateCounterAndHighlight();
     };
 
     tabPreview.onclick = () => {
@@ -2349,11 +2524,13 @@
       };
     }
 
-    modalBackdrop.querySelector('#task-save-btn').onclick = async () => {
-      const title = modalBackdrop.querySelector('#task-title-input').value.trim();
-      const desc = modalBackdrop.querySelector('#task-desc-input').value.trim();
-      const col = modalBackdrop.querySelector('#task-col-select').value;
-      const prio = modalBackdrop.querySelector('#task-prio-select').value || null;
+    saveBtn.onclick = async () => {
+      if (saveBtn.disabled) return;
+
+      const title = titleInput.value.trim();
+      const desc = descInput.value.trim();
+      const col = colSelect.value;
+      const prio = prioSelect.value || null;
 
       if (!title) {
         alert('Please specify a task title.');
