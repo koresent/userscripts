@@ -410,9 +410,15 @@
                   const id = 'board_' + (target.topicId ? `${target.peerId}_${target.topicId}` : target.peerId);
                   if (!foundBoards.some((b) => b.id === id)) {
                     let title = null;
-                    const titleMatch = line.match(/^[•\-*]?\s*([^:]+):\s*https?:\/\/t\.me\/c\//i);
-                    if (titleMatch) {
-                      title = titleMatch[1].trim();
+                    const mPre = line.match(/^[•\-*]?\s*([^:]+):\s*https?:\/\//i);
+                    const mMd = line.match(/^[•\-*]?\s*\[([^\]]+)\]\(https?:\/\//i);
+                    const mSuf = line.match(/https?:\/\/\S+\s*[-–—]\s*(.+)$/i);
+                    if (mPre) {
+                      title = mPre[1].trim();
+                    } else if (mMd) {
+                      title = mMd[1].trim();
+                    } else if (mSuf) {
+                      title = mSuf[1].trim();
                     }
                     foundBoards.push({
                       id,
