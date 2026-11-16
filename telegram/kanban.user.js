@@ -347,8 +347,14 @@
       };
     }
 
+    function autoResize(el) {
+      if (!el) return;
+      el.style.height = 'auto';
+      el.style.height = el.scrollHeight + 'px';
+    }
+
     function syncActiveLineValue() {
-      const activeInput = container.querySelector('input.kanban-line-input');
+      const activeInput = container.querySelector('.kanban-line-input');
       if (!activeInput) return;
       const idx = Number(activeInput.dataset.lineIdx);
       if (isNaN(idx) || lines[idx] === undefined) return;
@@ -366,8 +372,8 @@
 
         if (i === activeLineIdx) {
           row.className = 'kanban-editor-row is-active';
-          const input = document.createElement('input');
-          input.type = 'text';
+          const input = document.createElement('textarea');
+          input.rows = 1;
           input.className = 'kanban-line-input';
           input.value = lineText;
           input.dataset.lineIdx = String(i);
@@ -384,8 +390,9 @@
       container.appendChild(frag);
 
       if (activeLineIdx !== null) {
-        const activeInput = container.querySelector(`input.kanban-line-input[data-line-idx="${activeLineIdx}"]`);
+        const activeInput = container.querySelector(`.kanban-line-input[data-line-idx="${activeLineIdx}"]`);
         if (activeInput) {
+          autoResize(activeInput);
           activeInput.focus();
           const pos = Math.min(cursorCol, activeInput.value.length);
           activeInput.setSelectionRange(pos, pos);
@@ -455,8 +462,9 @@
     });
 
     container.addEventListener('input', (e) => {
-      const input = e.target.closest('input.kanban-line-input');
+      const input = e.target.closest('.kanban-line-input');
       if (!input) return;
+      autoResize(input);
       const idx = Number(input.dataset.lineIdx);
       if (isNaN(idx) || lines[idx] === undefined) return;
       lines[idx] = input.value;
@@ -465,7 +473,7 @@
     });
 
     container.addEventListener('paste', (e) => {
-      const input = e.target.closest('input.kanban-line-input');
+      const input = e.target.closest('.kanban-line-input');
       if (!input) return;
       const pasted = (e.clipboardData || window.clipboardData)?.getData('text');
       if (pasted && pasted.includes('\n')) {
@@ -487,6 +495,8 @@
         activeLineIdx = idx + lastIdx;
         render();
         onChange();
+      } else {
+        setTimeout(() => autoResize(input), 0);
       }
     });
 
@@ -498,10 +508,11 @@
       input.value = val.slice(0, start) + before + selected + after + val.slice(end);
       const newPos = selected ? end + before.length + after.length : start + before.length;
       input.setSelectionRange(newPos, newPos);
+      autoResize(input);
     }
 
     container.addEventListener('keydown', (e) => {
-      const input = e.target.closest('input.kanban-line-input');
+      const input = e.target.closest('.kanban-line-input');
       if (!input) return;
 
       const idx = Number(input.dataset.lineIdx);
@@ -1324,11 +1335,15 @@
       const board = state.boards.find((b) => b.id === boardId);
       if (!board) return;
 
+      const isSameBoard = state.activeBoardId === board.id;
       state.activeBoardId = board.id;
       state.peerId = board.peerId;
       state.topicId = board.topicId || null;
-      state.configMid = null;
-      state.tasks.clear();
+
+      if (!isSameBoard) {
+        state.configMid = null;
+        state.tasks.clear();
+      }
 
       if (typeof GM_setValue === 'function') {
         GM_setValue(STORAGE_KEYS.activeBoardId, board.id);
@@ -1514,7 +1529,18 @@
           offsetId = minMid;
         }
 
-        state.tasks = collectedTasks;
+        if (state.tasks.size === 0) {
+          state.tasks = collectedTasks;
+        } else {
+          for (const [mid, task] of collectedTasks) {
+            const existing = state.tasks.get(mid);
+            if (existing) {
+              if (existing.coverUrl) task.coverUrl = existing.coverUrl;
+              if (existing.syncStatus === 'syncing') continue;
+            }
+            state.tasks.set(mid, task);
+          }
+        }
       } catch (err) {
         console.error('[Kanban] Load history error:', err);
       } finally {
@@ -2518,6 +2544,7 @@
       border-radius: 8px;
       box-sizing: border-box;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 8px 10px;
       display: flex;
       flex-direction: column;
@@ -2537,7 +2564,7 @@
     .kanban-editor-row {
       min-height: 24px;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       box-sizing: border-box;
       width: 100%;
     }
@@ -2549,7 +2576,8 @@
 
     .kanban-line-input {
       width: 100%;
-      height: 24px;
+      min-height: 24px;
+      height: auto;
       border: none;
       outline: none;
       background: transparent;
@@ -2559,6 +2587,11 @@
       line-height: 1.5;
       padding: 0 4px;
       box-sizing: border-box;
+      resize: none;
+      overflow: hidden;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
 
     .kanban-editor-row.is-rendered {
@@ -2567,6 +2600,9 @@
       padding: 1px 4px;
       border-radius: 4px;
       user-select: text;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
 
     .kanban-editor-row.is-rendered:hover {
@@ -2575,9 +2611,19 @@
 
     .kanban-row-checklist {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 8px;
       width: 100%;
+    }
+
+    .kanban-row-text,
+    .kanban-row-checktext,
+    .kanban-row-quote,
+    .kanban-row-bullet,
+    .kanban-row-num {
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
 
     .kanban-row-checktext {
@@ -2765,8 +2811,8 @@
       tab.onclick = async (e) => {
         e.stopPropagation();
         const boardId = tab.getAttribute('data-board-id');
-        await api.selectBoard(boardId);
         activateKanbanView();
+        await api.selectBoard(boardId);
       };
     });
   }
@@ -3551,7 +3597,6 @@
         return;
       }
 
-      if (!state.isKanbanActive) return;
       if (detail?.peerId === state.peerId) {
         const msg = win.apiManagerProxy?.getMessageByPeer(state.peerId, detail.mid);
         if (!msg) return;
@@ -3567,7 +3612,7 @@
               if (parsed) {
                 if (Array.isArray(parsed.columns)) state.columns = parsed.columns;
                 if (Array.isArray(parsed.priorities)) state.priorities = parsed.priorities;
-                renderKanbanView();
+                if (state.isKanbanActive) renderKanbanView();
               }
             } catch (_) {}
           }
@@ -3576,20 +3621,21 @@
 
         const task = parseTaskFromMessage(msg);
         if (task) {
-          const existing = state.tasks.get(task.mid);
+          const existing = state.tasks.get(task.mid) || state.tasks.get(String(task.mid)) || state.tasks.get(Number(task.mid));
           if (existing?.coverUrl) task.coverUrl = existing.coverUrl;
           task.syncStatus = 'synced';
           state.tasks.set(task.mid, task);
-          renderKanbanView();
-          if (task.hasRealCover && !task.coverUrl) {
-            api.resolveCovers();
+          if (state.isKanbanActive) {
+            renderKanbanView();
+            if (task.hasRealCover && !task.coverUrl) {
+              api.resolveCovers();
+            }
           }
         }
       }
     });
 
     rootScope.addEventListener('message_sent', (e) => {
-      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
         const msg = detail.message;
@@ -3599,22 +3645,25 @@
         const task = parseTaskFromMessage(msg);
         if (task) {
           if (detail.tempId) {
-            const existing = state.tasks.get(detail.tempId);
+            const existing = state.tasks.get(detail.tempId) || state.tasks.get(String(detail.tempId)) || state.tasks.get(Number(detail.tempId));
             if (existing?.coverUrl) task.coverUrl = existing.coverUrl;
             state.tasks.delete(detail.tempId);
+            state.tasks.delete(String(detail.tempId));
+            state.tasks.delete(Number(detail.tempId));
           }
           task.syncStatus = 'synced';
           state.tasks.set(task.mid, task);
-          renderKanbanView();
-          if (task.hasRealCover && !task.coverUrl) {
-            api.resolveCovers();
+          if (state.isKanbanActive) {
+            renderKanbanView();
+            if (task.hasRealCover && !task.coverUrl) {
+              api.resolveCovers();
+            }
           }
         }
       }
     });
 
     rootScope.addEventListener('history_append', (e) => {
-      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
         const msg = detail.message;
@@ -3623,30 +3672,33 @@
 
         const task = parseTaskFromMessage(msg);
         if (task) {
-          const existing = state.tasks.get(task.mid);
+          const existing = state.tasks.get(task.mid) || state.tasks.get(String(task.mid)) || state.tasks.get(Number(task.mid));
           if (existing?.coverUrl) task.coverUrl = existing.coverUrl;
           task.syncStatus = 'synced';
           state.tasks.set(task.mid, task);
-          renderKanbanView();
-          if (task.hasRealCover && !task.coverUrl) {
-            api.resolveCovers();
+          if (state.isKanbanActive) {
+            renderKanbanView();
+            if (task.hasRealCover && !task.coverUrl) {
+              api.resolveCovers();
+            }
           }
         }
       }
     });
 
     rootScope.addEventListener('history_delete', (e) => {
-      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.peerId === state.peerId && Array.isArray(detail.msgs)) {
         let changed = false;
         for (const mid of detail.msgs) {
-          if (state.tasks.has(mid)) {
+          if (state.tasks.has(mid) || state.tasks.has(String(mid)) || state.tasks.has(Number(mid))) {
             state.tasks.delete(mid);
+            state.tasks.delete(String(mid));
+            state.tasks.delete(Number(mid));
             changed = true;
           }
         }
-        if (changed) renderKanbanView();
+        if (changed && state.isKanbanActive) renderKanbanView();
       }
     });
   }
