@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Kanban Board
 // @namespace      github.com/koresent/userscripts
-// @version        2.4.0
+// @version        2.5.0
 // @description    Native multi-board Kanban inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
 // @author         Koresent
 // @license        GPL-3.0
@@ -296,20 +296,66 @@
     return lines.map((l, i) => renderMarkdownLine(l, i)).join('');
   }
 
+  function renderCardChecklists(task) {
+    if (!task.description) return '';
+    const lines = task.description.split('\n');
+    const items = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const m = line.match(/^(\s*[-*]\s+)\[([ xX])\]\s*(.*)$/);
+      if (m) {
+        const isChecked = m[2].toLowerCase() === 'x';
+        const text = m[3] || '';
+        items.push({ lineIdx: i, isChecked, text });
+      }
+    }
+    if (items.length === 0) return '';
+
+    const maxItems = 4;
+    const visible = items.slice(0, maxItems);
+    const remaining = items.length - maxItems;
+
+    return `
+      <div class="kanban-card-checklists">
+        ${visible.map((it) => `
+          <div class="kanban-card-checklist-item ${it.isChecked ? 'is-checked' : ''}" data-task-mid="${task.mid}" data-line-index="${it.lineIdx}">
+            <input type="checkbox" class="kanban-checklist-checkbox" ${it.isChecked ? 'checked' : ''} />
+            <span class="kanban-card-checktext ${it.isChecked ? 'strikethrough' : ''}">${formatInlineMarkdown(escapeHtml(it.text))}</span>
+          </div>
+        `).join('')}
+        ${remaining > 0 ? `<div class="kanban-card-checklist-more">+${remaining} more items...</div>` : ''}
+      </div>
+    `;
+  }
+
   function createLiveMarkdownEditor({ container, initialText, onChange }) {
     let lines = (initialText || '').split('\n');
     if (lines.length === 0) lines = [''];
     let activeLineIdx = 0;
     let cursorCol = lines[0].length;
 
-    function wrapSelection(input, before, after) {
-      const start = input.selectionStart;
-      const end = input.selectionEnd;
-      const val = input.value;
-      const selected = val.slice(start, end);
-      input.value = val.slice(0, start) + before + selected + after + val.slice(end);
-      const newPos = selected ? end + before.length + after.length : start + before.length;
-      input.setSelectionRange(newPos, newPos);
+    function parseChecklistLine(str) {
+      const m = str.match(/^(\s*[-*]\s+)\[([ xX])\]\s*(.*)$/);
+      if (!m) return null;
+      return {
+        prefix: m[1],
+        isChecked: m[2].toLowerCase() === 'x',
+        itemText: m[3] || ''
+      };
+    }
+
+    function syncActiveLineValue() {
+      const activeInput = container.querySelector('input.kanban-line-input');
+      if (!activeInput) return;
+      const idx = Number(activeInput.dataset.lineIdx);
+      if (isNaN(idx) || lines[idx] === undefined) return;
+
+      const checkInfo = parseChecklistLine(lines[idx]);
+      if (checkInfo) {
+        lines[idx] = `${checkInfo.prefix}[${checkInfo.isChecked ? 'x' : ' '}] ${activeInput.value}`;
+      } else {
+        lines[idx] = activeInput.value;
+      }
     }
 
     function render() {
@@ -319,21 +365,48 @@
       for (let i = 0; i < lines.length; i++) {
         const lineText = lines[i];
         const row = document.createElement('div');
-        row.className = 'kanban-editor-row';
         row.dataset.lineIdx = String(i);
 
-        if (i === activeLineIdx) {
-          row.classList.add('is-active');
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.className = 'kanban-line-input';
-          input.value = lineText;
-          input.dataset.lineIdx = String(i);
-          input.placeholder = i === 0 && lines.length === 1 ? 'Task details, - [ ] checklist, **bold**, *italic*...' : '';
-          row.appendChild(input);
+        const checkInfo = parseChecklistLine(lineText);
+
+        if (checkInfo) {
+          row.className = `kanban-editor-row is-checklist ${checkInfo.isChecked ? 'is-checked' : ''} ${i === activeLineIdx ? 'is-active' : 'is-rendered'}`;
+
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'kanban-row-checkbox';
+          cb.checked = checkInfo.isChecked;
+          cb.dataset.checkLine = String(i);
+          row.appendChild(cb);
+
+          if (i === activeLineIdx) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = `kanban-line-input has-check ${checkInfo.isChecked ? 'strikethrough' : ''}`;
+            input.value = checkInfo.itemText;
+            input.dataset.lineIdx = String(i);
+            input.placeholder = 'Checklist task...';
+            row.appendChild(input);
+          } else {
+            const span = document.createElement('span');
+            span.className = `kanban-row-checktext ${checkInfo.isChecked ? 'strikethrough' : ''}`;
+            span.innerHTML = formatInlineMarkdown(escapeHtml(checkInfo.itemText)) || '<span class="kanban-empty-placeholder">Empty item</span>';
+            row.appendChild(span);
+          }
         } else {
-          row.classList.add('is-rendered');
-          row.innerHTML = renderMarkdownLine(lineText, i);
+          if (i === activeLineIdx) {
+            row.className = 'kanban-editor-row is-active';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'kanban-line-input';
+            input.value = lineText;
+            input.dataset.lineIdx = String(i);
+            input.placeholder = i === 0 && lines.length === 1 ? 'Task details, - [ ] checklist, **bold**, *italic*...' : '';
+            row.appendChild(input);
+          } else {
+            row.className = 'kanban-editor-row is-rendered';
+            row.innerHTML = renderMarkdownLine(lineText, i);
+          }
         }
 
         frag.appendChild(row);
@@ -352,23 +425,35 @@
       }
     }
 
+    function toggleChecklistLine(idx) {
+      if (lines[idx] === undefined) return;
+      const cur = lines[idx];
+      const checkInfo = parseChecklistLine(cur);
+      if (!checkInfo) return;
+
+      const nextChecked = !checkInfo.isChecked;
+      lines[idx] = `${checkInfo.prefix}[${nextChecked ? 'x' : ' '}] ${checkInfo.itemText}`;
+
+      const row = container.querySelector(`.kanban-editor-row[data-line-idx="${idx}"]`);
+      if (row) {
+        row.classList.toggle('is-checked', nextChecked);
+        const cb = row.querySelector('.kanban-row-checkbox');
+        if (cb) cb.checked = nextChecked;
+        const textSpan = row.querySelector('.kanban-row-checktext');
+        if (textSpan) textSpan.classList.toggle('strikethrough', nextChecked);
+        const input = row.querySelector('.kanban-line-input');
+        if (input) input.classList.toggle('strikethrough', nextChecked);
+      }
+      onChange();
+    }
+
     container.addEventListener('click', (e) => {
       const checkbox = e.target.closest('.kanban-row-checkbox');
       if (checkbox) {
         e.stopPropagation();
         const idx = Number(checkbox.dataset.checkLine);
-        if (!isNaN(idx) && lines[idx] !== undefined) {
-          const cur = lines[idx];
-          if (/^(\s*[-*]\s+\[) \](.*)$/.test(cur)) {
-            lines[idx] = cur.replace(/^(\s*[-*]\s+\[) \](.*)$/, '$1x]$2');
-          } else if (/^(\s*[-*]\s+\[)[xX]\](.*)$/.test(cur)) {
-            lines[idx] = cur.replace(/^(\s*[-*]\s+\[)[xX]\](.*)$/, '$1 ]$2');
-          }
-          const row = container.querySelector(`.kanban-editor-row[data-line-idx="${idx}"]`);
-          if (row) {
-            row.innerHTML = renderMarkdownLine(lines[idx], idx);
-          }
-          onChange();
+        if (!isNaN(idx)) {
+          toggleChecklistLine(idx);
         }
         return;
       }
@@ -377,14 +462,17 @@
       if (renderedRow) {
         const idx = Number(renderedRow.dataset.lineIdx);
         if (!isNaN(idx)) {
+          syncActiveLineValue();
           activeLineIdx = idx;
-          cursorCol = lines[idx].length;
+          const checkInfo = parseChecklistLine(lines[idx]);
+          cursorCol = checkInfo ? checkInfo.itemText.length : lines[idx].length;
           render();
         }
         return;
       }
 
       if (e.target === container) {
+        syncActiveLineValue();
         if (lines.length > 0 && lines[lines.length - 1].trim() !== '') {
           lines.push('');
           activeLineIdx = lines.length - 1;
@@ -403,7 +491,12 @@
       const input = e.target.closest('input.kanban-line-input');
       if (!input) return;
       const idx = Number(input.dataset.lineIdx);
-      lines[idx] = input.value;
+      const checkInfo = parseChecklistLine(lines[idx]);
+      if (checkInfo) {
+        lines[idx] = `${checkInfo.prefix}[${checkInfo.isChecked ? 'x' : ' '}] ${input.value}`;
+      } else {
+        lines[idx] = input.value;
+      }
       cursorCol = input.selectionStart;
       onChange();
     });
@@ -414,6 +507,7 @@
       const pasted = (e.clipboardData || window.clipboardData)?.getData('text');
       if (pasted && pasted.includes('\n')) {
         e.preventDefault();
+        syncActiveLineValue();
         const idx = Number(input.dataset.lineIdx);
         const selStart = input.selectionStart;
         const selEnd = input.selectionEnd;
@@ -433,69 +527,234 @@
       }
     });
 
+    function wrapSelection(input, before, after) {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const val = input.value;
+      const selected = val.slice(start, end);
+      input.value = val.slice(0, start) + before + selected + after + val.slice(end);
+      const newPos = selected ? end + before.length + after.length : start + before.length;
+      input.setSelectionRange(newPos, newPos);
+    }
+
     container.addEventListener('keydown', (e) => {
       const input = e.target.closest('input.kanban-line-input');
       if (!input) return;
 
       const idx = Number(input.dataset.lineIdx);
       const val = input.value;
-      lines[idx] = val;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const left = val.slice(0, start);
+      const right = val.slice(end);
+      const selected = val.slice(start, end);
 
+      const checkInfo = parseChecklistLine(lines[idx]);
+
+      // --- AUTOPAIR & SELECTION WRAPPING ---
+      // Auto-expand '- [' or '* [' into a live checklist
+      if (e.key === '[' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (!checkInfo && (left.endsWith('- ') || left.endsWith('* '))) {
+          e.preventDefault();
+          const indent = left.slice(0, -2);
+          lines[idx] = `${indent}- [ ] ${right}`;
+          activeLineIdx = idx;
+          cursorCol = 0;
+          render();
+          onChange();
+          return;
+        }
+      }
+
+      // Autopair: * (bold/italic)
+      if (e.key === '*' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, '*', '*');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (right.startsWith('*')) {
+          e.preventDefault();
+          input.setSelectionRange(start + 1, start + 1);
+          return;
+        }
+        e.preventDefault();
+        input.value = left + '**' + right;
+        input.setSelectionRange(start + 1, start + 1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
+      // Autopair: ` (code)
+      if (e.key === '`' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, '`', '`');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (right.startsWith('`')) {
+          e.preventDefault();
+          input.setSelectionRange(start + 1, start + 1);
+          return;
+        }
+        e.preventDefault();
+        input.value = left + '``' + right;
+        input.setSelectionRange(start + 1, start + 1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
+      // Autopair: _ (italic)
+      if (e.key === '_' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, '_', '_');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (right.startsWith('_')) {
+          e.preventDefault();
+          input.setSelectionRange(start + 1, start + 1);
+          return;
+        }
+        e.preventDefault();
+        input.value = left + '__' + right;
+        input.setSelectionRange(start + 1, start + 1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
+      // Autopair: ~ (strikethrough)
+      if (e.key === '~' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, '~~', '~~');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (left.endsWith('~')) {
+          e.preventDefault();
+          input.value = left + '~~~' + right;
+          input.setSelectionRange(start + 1, start + 1);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+      }
+
+      // Autopair: [ (link or brackets)
+      if (e.key === '[' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, '[', ']');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (right.startsWith(']')) {
+          e.preventDefault();
+          input.setSelectionRange(start + 1, start + 1);
+          return;
+        }
+        e.preventDefault();
+        input.value = left + '[]' + right;
+        input.setSelectionRange(start + 1, start + 1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
+      // Autopair: ( or {
+      if ((e.key === '(' || e.key === '{') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const closer = e.key === '(' ? ')' : '}';
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, e.key, closer);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (right.startsWith(closer)) {
+          e.preventDefault();
+          input.setSelectionRange(start + 1, start + 1);
+          return;
+        }
+        e.preventDefault();
+        input.value = left + e.key + closer + right;
+        input.setSelectionRange(start + 1, start + 1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
+      // Skip over closing brackets/quotes
+      if (['*', '`', '_', '~', ']', ')', '}'].includes(e.key) && right.startsWith(e.key)) {
+        e.preventDefault();
+        input.setSelectionRange(start + 1, start + 1);
+        return;
+      }
+
+      // Backspace between empty pairs
+      if (e.key === 'Backspace' && start === end && start > 0) {
+        const charBefore = val[start - 1];
+        const charAfter = val[start];
+        const pairs = { '*': '*', '`': '`', '_': '_', '~': '~', '[': ']', '(': ')', '{': '}' };
+        if (charBefore && pairs[charBefore] === charAfter) {
+          e.preventDefault();
+          input.value = val.slice(0, start - 1) + val.slice(start + 1);
+          input.setSelectionRange(start - 1, start - 1);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+      }
+
+      // Shortcuts: Ctrl+B / Cmd+B (Bold)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         wrapSelection(input, '**', '**');
-        lines[idx] = input.value;
-        onChange();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
         return;
       }
 
+      // Shortcuts: Ctrl+I / Cmd+I (Italic)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
         e.preventDefault();
         wrapSelection(input, '*', '*');
-        lines[idx] = input.value;
-        onChange();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
         return;
       }
 
+      // Shortcuts: Ctrl+K / Cmd+K (Link)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         wrapSelection(input, '[', '](url)');
-        lines[idx] = input.value;
-        onChange();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
         return;
       }
 
+      // Indent: Tab / Shift+Tab
       if (e.key === 'Tab') {
         e.preventDefault();
         if (e.shiftKey) {
           if (input.value.startsWith('  ')) {
-            const start = input.selectionStart;
             input.value = input.value.slice(2);
             cursorCol = Math.max(0, start - 2);
             input.setSelectionRange(cursorCol, cursorCol);
           }
         } else {
-          const start = input.selectionStart;
           input.value = '  ' + input.value;
           cursorCol = start + 2;
           input.setSelectionRange(cursorCol, cursorCol);
         }
-        lines[idx] = input.value;
-        onChange();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
         return;
       }
 
+      // Enter key
       if (e.key === 'Enter') {
         e.preventDefault();
-        const selStart = input.selectionStart;
-        const left = val.slice(0, selStart);
-        const right = val.slice(selStart);
+        syncActiveLineValue();
 
-        const checkMatch = left.match(/^(\s*[-*]\s+\[[ xX]\]\s*)(.*)$/);
-        if (checkMatch) {
-          const prefix = checkMatch[1];
-          const content = checkMatch[2];
-          if (!content.trim() && !right.trim()) {
+        if (checkInfo) {
+          if (!val.trim()) {
+            // Empty checklist line -> convert to normal empty line
             lines[idx] = '';
             activeLineIdx = idx;
             cursorCol = 0;
@@ -503,17 +762,17 @@
             onChange();
             return;
           } else {
-            lines[idx] = left;
-            const newPrefix = prefix.replace(/\[[xX]\]/, '[ ]');
-            lines.splice(idx + 1, 0, newPrefix + right);
+            lines[idx] = `${checkInfo.prefix}[${checkInfo.isChecked ? 'x' : ' '}] ${left}`;
+            lines.splice(idx + 1, 0, `${checkInfo.prefix}[ ] ${right}`);
             activeLineIdx = idx + 1;
-            cursorCol = newPrefix.length;
+            cursorCol = 0;
             render();
             onChange();
             return;
           }
         }
 
+        // Bullet list
         const bulletMatch = left.match(/^(\s*[-*]\s+)(.*)$/);
         if (bulletMatch) {
           const prefix = bulletMatch[1];
@@ -536,6 +795,7 @@
           }
         }
 
+        // Numbered list
         const numMatch = left.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
         if (numMatch) {
           const indent = numMatch[1];
@@ -561,6 +821,7 @@
           }
         }
 
+        // Default line split
         lines[idx] = left;
         lines.splice(idx + 1, 0, right);
         activeLineIdx = idx + 1;
@@ -570,9 +831,21 @@
         return;
       }
 
-      if (e.key === 'Backspace' && input.selectionStart === 0 && input.selectionEnd === 0) {
+      // Backspace at position 0
+      if (e.key === 'Backspace' && start === 0 && end === 0) {
+        if (checkInfo) {
+          e.preventDefault();
+          lines[idx] = val; // remove checklist prefix, keep raw content
+          activeLineIdx = idx;
+          cursorCol = 0;
+          render();
+          onChange();
+          return;
+        }
+
         if (idx > 0) {
           e.preventDefault();
+          syncActiveLineValue();
           const prevLen = lines[idx - 1].length;
           lines[idx - 1] += lines[idx];
           lines.splice(idx, 1);
@@ -584,21 +857,27 @@
         }
       }
 
+      // ArrowUp
       if (e.key === 'ArrowUp') {
         if (idx > 0) {
           e.preventDefault();
+          syncActiveLineValue();
           activeLineIdx = idx - 1;
-          cursorCol = input.selectionStart;
+          const prevCheck = parseChecklistLine(lines[idx - 1]);
+          cursorCol = prevCheck ? Math.min(start, prevCheck.itemText.length) : Math.min(start, lines[idx - 1].length);
           render();
           return;
         }
       }
 
+      // ArrowDown
       if (e.key === 'ArrowDown') {
         if (idx < lines.length - 1) {
           e.preventDefault();
+          syncActiveLineValue();
           activeLineIdx = idx + 1;
-          cursorCol = input.selectionStart;
+          const nextCheck = parseChecklistLine(lines[idx + 1]);
+          cursorCol = nextCheck ? Math.min(start, nextCheck.itemText.length) : Math.min(start, lines[idx + 1].length);
           render();
           return;
         }
@@ -609,13 +888,7 @@
 
     return {
       getValue() {
-        const activeInput = container.querySelector('input.kanban-line-input');
-        if (activeInput) {
-          const idx = Number(activeInput.dataset.lineIdx);
-          if (!isNaN(idx) && lines[idx] !== undefined) {
-            lines[idx] = activeInput.value;
-          }
-        }
+        syncActiveLineValue();
         return lines.join('\n');
       }
     };
@@ -1738,6 +2011,63 @@
       padding-right: 18px;
     }
 
+    .kanban-card-checklists {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin: 4px 0 2px 0;
+    }
+
+    .kanban-card-checklist-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-color, #ebdbb2);
+      line-height: 1.35;
+      cursor: default;
+    }
+
+    .kanban-card-checkbox {
+      margin: 0;
+      cursor: pointer;
+      accent-color: var(--accent-color, #7daea3);
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    .kanban-card-checktext {
+      word-break: break-word;
+    }
+
+    .kanban-card-checktext.strikethrough {
+      text-decoration: line-through;
+      opacity: 0.55;
+    }
+
+    .kanban-card-checklist-more {
+      font-size: 11px;
+      color: var(--secondary-text-color, #a89984);
+      font-style: italic;
+      margin-top: 2px;
+    }
+
+    .kanban-editor-row.is-checklist {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .kanban-line-input.has-check {
+      flex: 1;
+    }
+
+    .kanban-line-input.strikethrough {
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+
     .kanban-card-badges {
       display: flex;
       align-items: center;
@@ -2487,6 +2817,7 @@
                 ${showCover ? `<img class="kanban-card-cover" src="${task.coverUrl}" alt="Cover">` : ''}
                 <div class="kanban-card-body">
                   <div class="kanban-card-title">${escapeHtml(task.title)}</div>
+                  ${renderCardChecklists(task)}
                   <div class="kanban-card-badges">
                     ${prioBadgeHtml}
                     ${checklistBadgeHtml}
@@ -3230,7 +3561,7 @@
 
       e.stopPropagation();
 
-      const row = checkbox.closest('.kanban-checklist-row, .kanban-row-checklist');
+      const row = checkbox.closest('.kanban-card-checklist-item, .kanban-checklist-row, .kanban-row-checklist');
       if (!row) return;
 
       const taskMid = row.dataset.taskMid;
@@ -3258,9 +3589,19 @@
 
         checkbox.checked = isNowChecked;
         row.classList.toggle('is-checked', isNowChecked);
-        const textSpan = row.querySelector('.kanban-checklist-text, .kanban-row-checktext');
+        const textSpan = row.querySelector('.kanban-card-checktext, .kanban-checklist-text, .kanban-row-checktext');
         if (textSpan) {
           textSpan.classList.toggle('strikethrough', isNowChecked);
+        }
+
+        const card = row.closest('.kanban-card');
+        if (card) {
+          const stats = getChecklistStats(newDesc);
+          const badge = card.querySelector('.kanban-badge-checklist');
+          if (badge && stats) {
+            badge.innerHTML = `${ICONS.checklist} ${stats.done}/${stats.total}`;
+            badge.classList.toggle('all-done', stats.done === stats.total);
+          }
         }
       }
     });
