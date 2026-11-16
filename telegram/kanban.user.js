@@ -608,6 +608,34 @@
         return;
       }
 
+      // --- Autopair: | (spoiler) ---
+      if (e.key === '|' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (selected.length > 0) {
+          e.preventDefault();
+          wrapSelection(input, '||', '||');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        const isEmptyPair = /(^|\s)\|+$|^\|+$/.test(left) && /^\|+($|\s|[.,!?;:])/.test(right);
+        if (isEmptyPair) {
+          e.preventDefault();
+          input.value = left + '||' + right;
+          input.setSelectionRange(start + 1, start + 1);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        if (right.startsWith('|')) {
+          e.preventDefault();
+          input.setSelectionRange(start + 1, start + 1);
+          return;
+        }
+        e.preventDefault();
+        input.value = left + '||' + right;
+        input.setSelectionRange(start + 1, start + 1);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
       // --- Autopair: ` (code) ---
       if (e.key === '`' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (selected.length > 0) {
@@ -684,7 +712,7 @@
       }
 
       // --- Skip over closing bracket / quote ---
-      if (['*', '`', '_', '~', ']', ')', '}'].includes(e.key) && right.startsWith(e.key)) {
+      if (['*', '`', '_', '~', '|', ']', ')', '}'].includes(e.key) && right.startsWith(e.key)) {
         e.preventDefault();
         input.setSelectionRange(start + 1, start + 1);
         return;
@@ -713,9 +741,16 @@
           input.dispatchEvent(new Event('input', { bubbles: true }));
           return;
         }
+        if (start >= 2 && val.slice(start - 2, start) === '||' && val.slice(start, start + 2) === '||') {
+          e.preventDefault();
+          input.value = val.slice(0, start - 2) + val.slice(start + 2);
+          input.setSelectionRange(start - 2, start - 2);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
         const charBefore = val[start - 1];
         const charAfter = val[start];
-        const pairs = { '*': '*', '`': '`', '_': '_', '~': '~', '[': ']', '(': ')', '{': '}' };
+        const pairs = { '*': '*', '`': '`', '_': '_', '~': '~', '|': '|', '[': ']', '(': ')', '{': '}' };
         if (charBefore && pairs[charBefore] === charAfter) {
           e.preventDefault();
           input.value = val.slice(0, start - 1) + val.slice(start + 1);
@@ -3687,6 +3722,19 @@
     let isRegistryLoaded = false;
     const interval = setInterval(() => {
       if (win.rootScope?.managers?.appMessagesManager && win.apiManagerProxy) {
+        const currentMyId = win.rootScope?.myId || win.rootScope?.managers?.appUsersManager?.getSelf()?.id;
+        if (currentMyId && state.myId && currentMyId !== state.myId) {
+          deactivateKanbanView();
+          state.myId = currentMyId;
+          state.boardsRegistryMid = null;
+          state.boards = [];
+          state.tasks.clear();
+          state.outbox = [];
+          state.activeBoardId = null;
+          state.configMid = null;
+          api.loadBoardsRegistry();
+        }
+
         if (!isRegistryLoaded) {
           isRegistryLoaded = true;
           api.loadBoardsRegistry();

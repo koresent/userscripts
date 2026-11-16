@@ -382,6 +382,9 @@
             mutation.attributeName === 'class'
           ) {
             const target = mutation.target;
+            if (target.dataset?.twebRingManaged === '1') {
+              continue;
+            }
             if (target.classList?.contains('dialog-avatar')) {
               continue;
             }
@@ -754,19 +757,17 @@
     const STYLE_ID = 'tweb-hide-all-chats-style';
 
     const CSS_STYLES = `
-      /* Hide 'All Chats' folder tab in vertical folders sidebar */
-      .folders-sidebar__folder-item[data-filter-id="0"] {
-        display: none !important;
-      }
-
-      /* Hide 'All Chats' folder tab in horizontal folders bar */
-      .menu-horizontal-div-item[data-filter-id="0"] {
+      /* Only hide 'All Chats' if there are other custom folders present */
+      .folders-sidebar__scrollable:has(.folders-sidebar__folder-item:not([data-filter-id="0"])) .folders-sidebar__folder-item[data-filter-id="0"],
+      .menu-horizontal-div-items:has(.menu-horizontal-div-item:not([data-filter-id="0"])) .menu-horizontal-div-item[data-filter-id="0"] {
         display: none !important;
       }
     `;
 
     let observer = null;
     let isRunning = false;
+    let isSwitching = false;
+    let retryTimer = null;
 
     function injectStyles() {
       if (document.getElementById(STYLE_ID)) return;
@@ -782,70 +783,85 @@
     }
 
     function ensureVisibleFolderActive() {
-      if (!isRunning) return;
+      if (!isRunning || isSwitching) return;
       const selectedAllChats = document.querySelector(
         '.folders-sidebar__folder-item--selected[data-filter-id="0"], .menu-horizontal-div-item.active[data-filter-id="0"]'
       );
-      if (selectedAllChats) {
-        const targetFolder = document.querySelector(
-          '.folders-sidebar__folder-item[data-filter-id]:not([data-filter-id="0"]), .menu-horizontal-div-item[data-filter-id]:not([data-filter-id="0"])'
-        );
-        if (targetFolder) {
-          targetFolder.click();
-        }
-      }
+      if (!selectedAllChats) return;
+
+      const targetFolder = document.querySelector(
+        '.folders-sidebar__folder-item[data-filter-id]:not([data-filter-id="0"]), .menu-horizontal-div-item[data-filter-id]:not([data-filter-id="0"])'
+      );
+      if (!targetFolder) return;
+
+      isSwitching = true;
+      targetFolder.click();
+      setTimeout(() => {
+        isSwitching = false;
+      }, 500);
     }
 
     function observeFolders() {
-      if (observer) observer.disconnect();
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+
+      // ONLY observe the folders container, never body or main-columns
+      const container =
+        document.querySelector('.folders-sidebar__scrollable') ||
+        document.querySelector('.menu-horizontal-div-items') ||
+        document.getElementById('folders-sidebar');
+
+      if (!container) {
+        if (isRunning) {
+          retryTimer = setTimeout(observeFolders, 1000);
+        }
+        return;
+      }
+
       observer = new MutationObserver(() => {
-        if (!isRunning) return;
+        if (!isRunning || isSwitching) return;
         ensureVisibleFolderActive();
       });
 
-      const root =
-        document.getElementById('folders-sidebar') ||
-        document.getElementById('main-columns') ||
-        document.body;
-      if (root) {
-        observer.observe(root, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class']
-        });
-        ensureVisibleFolderActive();
-      } else {
-        setTimeout(observeFolders, 300);
-      }
+      observer.observe(container, {
+        childList: true,
+        attributes: true,
+        attributeFilter: ['class']
+      });
+
+      ensureVisibleFolderActive();
     }
 
     function enable() {
       if (isRunning) return;
       isRunning = true;
+      isSwitching = false;
       injectStyles();
       if (document.readyState === 'loading') {
-        document.addEventListener(
-          'DOMContentLoaded',
-          () => {
-            observeFolders();
-            ensureVisibleFolderActive();
-          },
-          { once: true }
-        );
+        document.addEventListener('DOMContentLoaded', observeFolders, { once: true });
       } else {
         observeFolders();
-        ensureVisibleFolderActive();
       }
     }
 
     function disable() {
       if (!isRunning) return;
       isRunning = false;
+      isSwitching = false;
       removeStyles();
       if (observer) {
         observer.disconnect();
         observer = null;
+      }
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
       }
     }
 
