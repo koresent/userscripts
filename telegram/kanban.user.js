@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Kanban Board
 // @namespace      github.com/koresent/userscripts
-// @version        2.3.0
+// @version        2.4.0
 // @description    Native multi-board Kanban inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
 // @author         Koresent
 // @license        GPL-3.0
@@ -203,8 +203,7 @@
     activeInlineCol: null,
     activeMenuColId: null,
     isProcessingOutbox: false,
-    isSyncingRegistry: false,
-    modalDescTab: 'write'
+    isSyncingRegistry: false
   };
 
   function create1x1PixelBlob() {
@@ -245,83 +244,381 @@
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="kanban-md-link">$1</a>');
   }
 
+  function renderMarkdownLine(lineText, lineIdx) {
+    if (!lineText) return '<div class="kanban-row-empty">&nbsp;</div>';
+
+    const checkMatch = lineText.match(/^(\s*[-*]\s+)\[([ xX])\]\s*(.*)$/);
+    if (checkMatch) {
+      const isChecked = checkMatch[2].toLowerCase() === 'x';
+      const itemText = formatInlineMarkdown(escapeHtml(checkMatch[3]));
+      return `
+        <div class="kanban-row-checklist ${isChecked ? 'is-checked' : ''}">
+          <input type="checkbox" class="kanban-row-checkbox" data-check-line="${lineIdx}" ${isChecked ? 'checked' : ''} />
+          <span class="kanban-row-checktext ${isChecked ? 'strikethrough' : ''}">${itemText || '<span class="kanban-empty-placeholder">Empty item</span>'}</span>
+        </div>
+      `;
+    }
+
+    if (lineText.startsWith('### ')) {
+      return `<h3 class="kanban-row-h3">${formatInlineMarkdown(escapeHtml(lineText.slice(4)))}</h3>`;
+    }
+    if (lineText.startsWith('## ')) {
+      return `<h2 class="kanban-row-h2">${formatInlineMarkdown(escapeHtml(lineText.slice(3)))}</h2>`;
+    }
+    if (lineText.startsWith('# ')) {
+      return `<h1 class="kanban-row-h1">${formatInlineMarkdown(escapeHtml(lineText.slice(2)))}</h1>`;
+    }
+
+    if (lineText.startsWith('> ')) {
+      return `<blockquote class="kanban-row-quote">${formatInlineMarkdown(escapeHtml(lineText.slice(2)))}</blockquote>`;
+    }
+
+    const bulletMatch = lineText.match(/^(\s*[-*]\s+)(.*)$/);
+    if (bulletMatch) {
+      return `<div class="kanban-row-bullet"><span class="kanban-bullet-dot">•</span> ${formatInlineMarkdown(escapeHtml(bulletMatch[2]))}</div>`;
+    }
+
+    const numMatch = lineText.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
+    if (numMatch) {
+      return `<div class="kanban-row-num"><span class="kanban-num-badge">${numMatch[2]}.</span> ${formatInlineMarkdown(escapeHtml(numMatch[4]))}</div>`;
+    }
+
+    if (lineText.trim().startsWith('```')) {
+      return `<div class="kanban-row-code-fence"><code>${escapeHtml(lineText)}</code></div>`;
+    }
+
+    return `<div class="kanban-row-text">${formatInlineMarkdown(escapeHtml(lineText))}</div>`;
+  }
+
   function renderMarkdown(mdText, taskMid = null) {
     if (!mdText) return '';
-
     const lines = mdText.split('\n');
-    let inCodeBlock = false;
-    let codeBlockLines = [];
-    const html = [];
+    return lines.map((l, i) => renderMarkdownLine(l, i)).join('');
+  }
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+  function createLiveMarkdownEditor({ container, initialText, onChange }) {
+    let lines = (initialText || '').split('\n');
+    if (lines.length === 0) lines = [''];
+    let activeLineIdx = 0;
+    let cursorCol = lines[0].length;
 
-      if (line.trim().startsWith('```')) {
-        if (inCodeBlock) {
-          html.push(`<pre class="kanban-code-block"><code>${escapeHtml(codeBlockLines.join('\n'))}</code></pre>`);
-          codeBlockLines = [];
-          inCodeBlock = false;
+    function wrapSelection(input, before, after) {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const val = input.value;
+      const selected = val.slice(start, end);
+      input.value = val.slice(0, start) + before + selected + after + val.slice(end);
+      const newPos = selected ? end + before.length + after.length : start + before.length;
+      input.setSelectionRange(newPos, newPos);
+    }
+
+    function render() {
+      container.innerHTML = '';
+      const frag = document.createDocumentFragment();
+
+      for (let i = 0; i < lines.length; i++) {
+        const lineText = lines[i];
+        const row = document.createElement('div');
+        row.className = 'kanban-editor-row';
+        row.dataset.lineIdx = String(i);
+
+        if (i === activeLineIdx) {
+          row.classList.add('is-active');
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'kanban-line-input';
+          input.value = lineText;
+          input.dataset.lineIdx = String(i);
+          input.placeholder = i === 0 && lines.length === 1 ? 'Task details, - [ ] checklist, **bold**, *italic*...' : '';
+          row.appendChild(input);
         } else {
-          inCodeBlock = true;
+          row.classList.add('is-rendered');
+          row.innerHTML = renderMarkdownLine(lineText, i);
         }
-        continue;
+
+        frag.appendChild(row);
       }
 
-      if (inCodeBlock) {
-        codeBlockLines.push(line);
-        continue;
-      }
+      container.appendChild(frag);
 
-      const checkMatch = line.match(/^(\s*[-*]\s+)\[([ xX])\]\s+(.*)$/);
-      if (checkMatch) {
-        const isChecked = checkMatch[2].toLowerCase() === 'x';
-        const itemText = formatInlineMarkdown(escapeHtml(checkMatch[3]));
-        html.push(`
-          <div class="kanban-checklist-row ${isChecked ? 'is-checked' : ''}" data-task-mid="${taskMid || ''}" data-line-index="${i}">
-            <input type="checkbox" class="kanban-checklist-checkbox" ${isChecked ? 'checked' : ''} />
-            <span class="kanban-checklist-text ${isChecked ? 'strikethrough' : ''}">${itemText}</span>
-          </div>
-        `);
-        continue;
+      if (activeLineIdx !== null) {
+        const activeInput = container.querySelector(`input.kanban-line-input[data-line-idx="${activeLineIdx}"]`);
+        if (activeInput) {
+          activeInput.focus();
+          const pos = Math.min(cursorCol, activeInput.value.length);
+          activeInput.setSelectionRange(pos, pos);
+          activeInput.closest('.kanban-editor-row')?.scrollIntoView({ block: 'nearest' });
+        }
       }
-
-      if (line.startsWith('### ')) {
-        html.push(`<h3>${formatInlineMarkdown(escapeHtml(line.slice(4)))}</h3>`);
-        continue;
-      }
-      if (line.startsWith('## ')) {
-        html.push(`<h2>${formatInlineMarkdown(escapeHtml(line.slice(3)))}</h2>`);
-        continue;
-      }
-      if (line.startsWith('# ')) {
-        html.push(`<h1>${formatInlineMarkdown(escapeHtml(line.slice(2)))}</h1>`);
-        continue;
-      }
-
-      if (line.startsWith('> ')) {
-        html.push(`<blockquote>${formatInlineMarkdown(escapeHtml(line.slice(2)))}</blockquote>`);
-        continue;
-      }
-
-      const listMatch = line.match(/^(\s*[-*]\s+)(.*)$/);
-      if (listMatch) {
-        html.push(`<li>${formatInlineMarkdown(escapeHtml(listMatch[2]))}</li>`);
-        continue;
-      }
-
-      if (line.trim() === '') {
-        html.push('<div class="kanban-md-gap"></div>');
-        continue;
-      }
-
-      html.push(`<p>${formatInlineMarkdown(escapeHtml(line))}</p>`);
     }
 
-    if (inCodeBlock) {
-      html.push(`<pre class="kanban-code-block"><code>${escapeHtml(codeBlockLines.join('\n'))}</code></pre>`);
-    }
+    container.addEventListener('click', (e) => {
+      const checkbox = e.target.closest('.kanban-row-checkbox');
+      if (checkbox) {
+        e.stopPropagation();
+        const idx = Number(checkbox.dataset.checkLine);
+        if (!isNaN(idx) && lines[idx] !== undefined) {
+          const cur = lines[idx];
+          if (/^(\s*[-*]\s+\[) \](.*)$/.test(cur)) {
+            lines[idx] = cur.replace(/^(\s*[-*]\s+\[) \](.*)$/, '$1x]$2');
+          } else if (/^(\s*[-*]\s+\[)[xX]\](.*)$/.test(cur)) {
+            lines[idx] = cur.replace(/^(\s*[-*]\s+\[)[xX]\](.*)$/, '$1 ]$2');
+          }
+          const row = container.querySelector(`.kanban-editor-row[data-line-idx="${idx}"]`);
+          if (row) {
+            row.innerHTML = renderMarkdownLine(lines[idx], idx);
+          }
+          onChange();
+        }
+        return;
+      }
 
-    return html.join('');
+      const renderedRow = e.target.closest('.kanban-editor-row.is-rendered');
+      if (renderedRow) {
+        const idx = Number(renderedRow.dataset.lineIdx);
+        if (!isNaN(idx)) {
+          activeLineIdx = idx;
+          cursorCol = lines[idx].length;
+          render();
+        }
+        return;
+      }
+
+      if (e.target === container) {
+        if (lines.length > 0 && lines[lines.length - 1].trim() !== '') {
+          lines.push('');
+          activeLineIdx = lines.length - 1;
+          cursorCol = 0;
+          render();
+          onChange();
+        } else {
+          activeLineIdx = lines.length - 1;
+          cursorCol = lines[activeLineIdx].length;
+          render();
+        }
+      }
+    });
+
+    container.addEventListener('input', (e) => {
+      const input = e.target.closest('input.kanban-line-input');
+      if (!input) return;
+      const idx = Number(input.dataset.lineIdx);
+      lines[idx] = input.value;
+      cursorCol = input.selectionStart;
+      onChange();
+    });
+
+    container.addEventListener('paste', (e) => {
+      const input = e.target.closest('input.kanban-line-input');
+      if (!input) return;
+      const pasted = (e.clipboardData || window.clipboardData)?.getData('text');
+      if (pasted && pasted.includes('\n')) {
+        e.preventDefault();
+        const idx = Number(input.dataset.lineIdx);
+        const selStart = input.selectionStart;
+        const selEnd = input.selectionEnd;
+        const left = input.value.slice(0, selStart);
+        const right = input.value.slice(selEnd);
+        const pastedLines = pasted.split('\n');
+
+        pastedLines[0] = left + pastedLines[0];
+        const lastIdx = pastedLines.length - 1;
+        cursorCol = pastedLines[lastIdx].length;
+        pastedLines[lastIdx] = pastedLines[lastIdx] + right;
+
+        lines.splice(idx, 1, ...pastedLines);
+        activeLineIdx = idx + lastIdx;
+        render();
+        onChange();
+      }
+    });
+
+    container.addEventListener('keydown', (e) => {
+      const input = e.target.closest('input.kanban-line-input');
+      if (!input) return;
+
+      const idx = Number(input.dataset.lineIdx);
+      const val = input.value;
+      lines[idx] = val;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        wrapSelection(input, '**', '**');
+        lines[idx] = input.value;
+        onChange();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
+        e.preventDefault();
+        wrapSelection(input, '*', '*');
+        lines[idx] = input.value;
+        onChange();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        wrapSelection(input, '[', '](url)');
+        lines[idx] = input.value;
+        onChange();
+        return;
+      }
+
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          if (input.value.startsWith('  ')) {
+            const start = input.selectionStart;
+            input.value = input.value.slice(2);
+            cursorCol = Math.max(0, start - 2);
+            input.setSelectionRange(cursorCol, cursorCol);
+          }
+        } else {
+          const start = input.selectionStart;
+          input.value = '  ' + input.value;
+          cursorCol = start + 2;
+          input.setSelectionRange(cursorCol, cursorCol);
+        }
+        lines[idx] = input.value;
+        onChange();
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const selStart = input.selectionStart;
+        const left = val.slice(0, selStart);
+        const right = val.slice(selStart);
+
+        const checkMatch = left.match(/^(\s*[-*]\s+\[[ xX]\]\s*)(.*)$/);
+        if (checkMatch) {
+          const prefix = checkMatch[1];
+          const content = checkMatch[2];
+          if (!content.trim() && !right.trim()) {
+            lines[idx] = '';
+            activeLineIdx = idx;
+            cursorCol = 0;
+            render();
+            onChange();
+            return;
+          } else {
+            lines[idx] = left;
+            const newPrefix = prefix.replace(/\[[xX]\]/, '[ ]');
+            lines.splice(idx + 1, 0, newPrefix + right);
+            activeLineIdx = idx + 1;
+            cursorCol = newPrefix.length;
+            render();
+            onChange();
+            return;
+          }
+        }
+
+        const bulletMatch = left.match(/^(\s*[-*]\s+)(.*)$/);
+        if (bulletMatch) {
+          const prefix = bulletMatch[1];
+          const content = bulletMatch[2];
+          if (!content.trim() && !right.trim()) {
+            lines[idx] = '';
+            activeLineIdx = idx;
+            cursorCol = 0;
+            render();
+            onChange();
+            return;
+          } else {
+            lines[idx] = left;
+            lines.splice(idx + 1, 0, prefix + right);
+            activeLineIdx = idx + 1;
+            cursorCol = prefix.length;
+            render();
+            onChange();
+            return;
+          }
+        }
+
+        const numMatch = left.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
+        if (numMatch) {
+          const indent = numMatch[1];
+          const num = parseInt(numMatch[2], 10);
+          const after = numMatch[3];
+          const content = numMatch[4];
+          if (!content.trim() && !right.trim()) {
+            lines[idx] = '';
+            activeLineIdx = idx;
+            cursorCol = 0;
+            render();
+            onChange();
+            return;
+          } else {
+            lines[idx] = left;
+            const newPrefix = `${indent}${num + 1}${after}`;
+            lines.splice(idx + 1, 0, newPrefix + right);
+            activeLineIdx = idx + 1;
+            cursorCol = newPrefix.length;
+            render();
+            onChange();
+            return;
+          }
+        }
+
+        lines[idx] = left;
+        lines.splice(idx + 1, 0, right);
+        activeLineIdx = idx + 1;
+        cursorCol = 0;
+        render();
+        onChange();
+        return;
+      }
+
+      if (e.key === 'Backspace' && input.selectionStart === 0 && input.selectionEnd === 0) {
+        if (idx > 0) {
+          e.preventDefault();
+          const prevLen = lines[idx - 1].length;
+          lines[idx - 1] += lines[idx];
+          lines.splice(idx, 1);
+          activeLineIdx = idx - 1;
+          cursorCol = prevLen;
+          render();
+          onChange();
+          return;
+        }
+      }
+
+      if (e.key === 'ArrowUp') {
+        if (idx > 0) {
+          e.preventDefault();
+          activeLineIdx = idx - 1;
+          cursorCol = input.selectionStart;
+          render();
+          return;
+        }
+      }
+
+      if (e.key === 'ArrowDown') {
+        if (idx < lines.length - 1) {
+          e.preventDefault();
+          activeLineIdx = idx + 1;
+          cursorCol = input.selectionStart;
+          render();
+          return;
+        }
+      }
+    });
+
+    render();
+
+    return {
+      getValue() {
+        const activeInput = container.querySelector('input.kanban-line-input');
+        if (activeInput) {
+          const idx = Number(activeInput.dataset.lineIdx);
+          if (!isNaN(idx) && lines[idx] !== undefined) {
+            lines[idx] = activeInput.value;
+          }
+        }
+        return lines.join('\n');
+      }
+    };
   }
 
   function getChecklistStats(desc) {
@@ -390,12 +687,18 @@
     let hasRealCover = false;
 
     if (photo && Array.isArray(photo.sizes) && photo.sizes.length > 0) {
-      const isInitialPlaceholder = photo.sizes.every((s) => s.w === 1 && s.h === 1);
-      if (!isInitialPlaceholder) {
+      const maxDim = photo.sizes.reduce((max, s) => {
+        const w = s.w || s.width || 0;
+        const h = s.h || s.height || 0;
+        return Math.max(max, w, h);
+      }, 0);
+
+      if (maxDim > 1) {
         hasRealCover = true;
         coverThumb =
-          photo.sizes.find((s) => s.type === 'm') ||
-          photo.sizes.find((s) => s.type === 'x') ||
+          photo.sizes.find((s) => ((s.w || 0) > 1 || (s.h || 0) > 1) && s.type === 'm') ||
+          photo.sizes.find((s) => ((s.w || 0) > 1 || (s.h || 0) > 1) && s.type === 'x') ||
+          photo.sizes.find((s) => (s.w || 0) > 1 || (s.h || 0) > 1) ||
           photo.sizes[0];
       }
     }
@@ -445,20 +748,6 @@
     const premiumLimit = appCfg.caption_length_limit_premium || 4096;
     const maxLimit = isPrem ? premiumLimit : defaultLimit;
     return { isPrem, maxLimit, defaultLimit, premiumLimit };
-  }
-
-  function renderEditorBackdrop(text, limit) {
-    if (!text) return '';
-    const trailing = text.endsWith('\n') ? '<br>&nbsp;' : '';
-    if (limit <= 0) {
-      return `<mark class="kanban-overflow-mark">${escapeHtml(text)}${trailing}</mark>`;
-    }
-    if (text.length <= limit) {
-      return `<span style="color:transparent;">${escapeHtml(text)}${trailing}</span>`;
-    }
-    const safe = text.slice(0, limit);
-    const over = text.slice(limit);
-    return `<span style="color:transparent;">${escapeHtml(safe)}</span><mark class="kanban-overflow-mark">${escapeHtml(over)}${trailing}</mark>`;
   }
 
   const api = {
@@ -881,8 +1170,20 @@
             const url = await afm.downloadMediaURL({ media: task.photo, thumb: task.coverThumb });
             if (url) {
               task.coverUrl = url;
-              const imgEl = document.querySelector(`[data-card-mid="${task.mid}"] .kanban-card-cover`);
-              if (imgEl) {
+              const cardEl = document.querySelector(`[data-card-mid="${task.mid}"]`);
+              if (cardEl) {
+                let imgEl = cardEl.querySelector('.kanban-card-cover');
+                if (!imgEl) {
+                  imgEl = document.createElement('img');
+                  imgEl.className = 'kanban-card-cover';
+                  imgEl.alt = 'Cover';
+                  const body = cardEl.querySelector('.kanban-card-body');
+                  if (body) {
+                    body.before(imgEl);
+                  } else {
+                    cardEl.prepend(imgEl);
+                  }
+                }
                 imgEl.src = url;
                 imgEl.style.display = 'block';
               }
@@ -1759,25 +2060,6 @@
       border-color: var(--accent-color, #7daea3);
     }
 
-    .kanban-tier-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 1px 7px;
-      border-radius: 10px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.3px;
-      text-transform: uppercase;
-      background: rgba(255, 255, 255, 0.08);
-      color: var(--secondary-text-color, #a89984);
-    }
-
-    .kanban-tier-badge.is-premium {
-      background: rgba(211, 134, 155, 0.2);
-      color: #d3869b;
-      border: 1px solid rgba(211, 134, 155, 0.4);
-    }
-
     .kanban-char-counter {
       font-size: 12px;
       font-family: inherit;
@@ -1790,82 +2072,164 @@
       font-weight: 700;
     }
 
-    .kanban-editor-container {
-      position: relative;
+    .kanban-live-editor {
       width: 100%;
-      min-height: 240px;
-      height: 240px;
+      min-height: 220px;
+      max-height: 340px;
       background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
       border-radius: 8px;
       box-sizing: border-box;
-      overflow: hidden;
+      overflow-y: auto;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      cursor: text;
       transition: border-color 0.15s ease;
     }
 
-    .kanban-editor-container:focus-within {
+    .kanban-live-editor:focus-within {
       border-color: var(--accent-color, #7daea3);
     }
 
-    .kanban-editor-container.has-overflow {
+    .kanban-live-editor.has-overflow {
       border-color: #ea6962 !important;
     }
 
-    .kanban-editor-backdrop,
-    .kanban-form-textarea {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      padding: 12px;
-      font-size: 13.5px;
-      line-height: 1.5;
+    .kanban-editor-row {
+      min-height: 24px;
+      display: flex;
+      align-items: center;
       box-sizing: border-box;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      word-break: break-word;
-      overflow-y: scroll;
+      width: 100%;
+    }
+
+    .kanban-editor-row.is-active {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 4px;
+    }
+
+    .kanban-line-input {
+      width: 100%;
+      height: 24px;
       border: none;
       outline: none;
-    }
-
-    .kanban-editor-backdrop {
-      z-index: 1;
-      pointer-events: none;
-      color: transparent;
-      user-select: none;
-      -webkit-user-select: none;
       background: transparent;
-      scrollbar-color: transparent transparent;
-    }
-
-    .kanban-form-textarea {
-      z-index: 2;
-      background: transparent !important;
       color: var(--text-color, #ebdbb2);
-      resize: none;
+      font-size: 13.5px;
       font-family: inherit;
-    }
-
-    .kanban-overflow-mark {
-      background-color: rgba(234, 105, 98, 0.45);
-      color: transparent;
-      border-radius: 2px;
-      padding: 0;
-      margin: 0;
-    }
-
-    .kanban-md-preview-pane {
-      min-height: 240px;
-      max-height: 340px;
-      overflow-y: auto;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
-      border-radius: 8px;
-      padding: 12px;
+      line-height: 1.5;
+      padding: 0 4px;
       box-sizing: border-box;
+    }
+
+    .kanban-editor-row.is-rendered {
+      width: 100%;
+      cursor: text;
+      padding: 1px 4px;
+      border-radius: 4px;
+      user-select: text;
+    }
+
+    .kanban-editor-row.is-rendered:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .kanban-row-checklist {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .kanban-row-checkbox {
+      margin: 0;
+      cursor: pointer;
+      accent-color: var(--accent-color, #7daea3);
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
+    }
+
+    .kanban-row-checktext {
+      font-size: 13.5px;
+      color: var(--text-color, #ebdbb2);
+      line-height: 1.5;
+    }
+
+    .kanban-row-checktext.strikethrough {
+      text-decoration: line-through;
+      opacity: 0.55;
+    }
+
+    .kanban-row-h1 {
+      font-size: 17px;
+      font-weight: 700;
+      color: #fabd2f;
+      margin: 2px 0;
+    }
+
+    .kanban-row-h2 {
+      font-size: 15.5px;
+      font-weight: 600;
+      color: #8ec07c;
+      margin: 2px 0;
+    }
+
+    .kanban-row-h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #83a598;
+      margin: 2px 0;
+    }
+
+    .kanban-row-quote {
+      border-left: 3px solid var(--accent-color, #7daea3);
+      margin: 0;
+      padding-left: 8px;
+      color: var(--secondary-text-color, #a89984);
+      font-style: italic;
+      font-size: 13px;
+    }
+
+    .kanban-row-bullet,
+    .kanban-row-num {
+      font-size: 13.5px;
+      color: var(--text-color, #ebdbb2);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .kanban-bullet-dot {
+      color: var(--accent-color, #7daea3);
+      font-size: 14px;
+    }
+
+    .kanban-num-badge {
+      color: var(--accent-color, #7daea3);
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .kanban-row-code-fence {
+      font-family: monospace;
+      font-size: 12.5px;
+      color: #d3869b;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+
+    .kanban-row-empty {
+      height: 16px;
+    }
+
+    .kanban-row-text {
+      font-size: 13.5px;
+      color: var(--text-color, #ebdbb2);
+      line-height: 1.5;
     }
 
     .kanban-cover-preview-box {
@@ -2106,8 +2470,7 @@
                 </span>`
               : '';
 
-            const coverStyle = task.coverUrl ? `display:block;` : `display:none;`;
-            const coverSrc = task.coverUrl || '';
+            const showCover = task.hasRealCover && !!task.coverUrl;
             const displayId = typeof task.id === 'number' && task.id < 100000000 ? `#${task.id}` : '';
 
             const syncStatus = task.syncStatus || 'synced';
@@ -2121,7 +2484,7 @@
             return `
               <div class="kanban-card" draggable="true" data-card-mid="${task.mid}">
                 <button class="kanban-card-quick-del" data-quick-del="${task.mid}" title="Delete task">${ICONS.trash}</button>
-                <img class="kanban-card-cover" src="${coverSrc}" style="${coverStyle}" alt="Cover">
+                ${showCover ? `<img class="kanban-card-cover" src="${task.coverUrl}" alt="Cover">` : ''}
                 <div class="kanban-card-body">
                   <div class="kanban-card-title">${escapeHtml(task.title)}</div>
                   <div class="kanban-card-badges">
@@ -2475,7 +2838,6 @@
       .join('');
 
     let coverFileSelected = null;
-    state.modalDescTab = 'write';
 
     modalBackdrop.innerHTML = `
       <div class="kanban-modal" onclick="event.stopPropagation()">
@@ -2490,29 +2852,10 @@
           </div>
           <div class="kanban-form-group">
             <div class="kanban-form-header-row">
-              <div style="display:flex;align-items:center;gap:8px;">
-                <label class="kanban-form-label" style="margin-bottom:0;">Description (Markdown & Checklists)</label>
-                <span class="kanban-tier-badge ${limitInfo.isPrem ? 'is-premium' : ''}" id="kanban-tier-badge" title="Telegram caption limit: ${limitInfo.maxLimit} characters">
-                  ${limitInfo.isPrem ? 'Premium' : 'Free'}
-                </span>
-              </div>
-              <div style="display:flex;align-items:center;gap:12px;">
-                <span class="kanban-char-counter" id="kanban-char-counter">0 / 0 (0)</span>
-                <div class="kanban-tab-toggle">
-                  <button class="kanban-tab-btn is-active" id="modal-tab-write">Write</button>
-                  <button class="kanban-tab-btn" id="modal-tab-preview">Preview</button>
-                </div>
-              </div>
+              <label class="kanban-form-label" style="margin-bottom:0;">Description</label>
+              <span class="kanban-char-counter" id="kanban-char-counter">0 / 0 (0)</span>
             </div>
-            <div id="modal-desc-write-wrap">
-              <div class="kanban-editor-container" id="kanban-editor-box">
-                <div class="kanban-editor-backdrop" id="task-desc-backdrop"></div>
-                <textarea class="kanban-form-textarea" id="task-desc-input" placeholder="Task details, - [ ] checklist items, **bold**, *italic*, code...">${escapeHtml(task?.description || '')}</textarea>
-              </div>
-            </div>
-            <div id="modal-desc-preview-wrap" style="display:none;">
-              <div class="kanban-md-preview-pane" id="modal-md-preview-content"></div>
-            </div>
+            <div class="kanban-live-editor" id="kanban-live-editor"></div>
           </div>
           <div style="display:flex;gap:12px;">
             <div class="kanban-form-group" style="flex:1;">
@@ -2532,7 +2875,7 @@
             <label class="kanban-form-label">Card Cover</label>
             <div class="kanban-cover-preview-box" id="task-cover-box" title="Click to upload cover image">
               ${
-                task?.coverUrl
+                task?.hasRealCover && task?.coverUrl
                   ? `<img class="kanban-cover-preview-img" src="${task.coverUrl}">`
                   : `<span>${ICONS.image} Click to upload cover image</span>`
               }
@@ -2557,23 +2900,17 @@
     modalBackdrop.querySelector('#task-cancel-btn').onclick = closeActiveModal;
 
     const titleInput = modalBackdrop.querySelector('#task-title-input');
-    const descInput = modalBackdrop.querySelector('#task-desc-input');
-    const descBackdrop = modalBackdrop.querySelector('#task-desc-backdrop');
-    const editorBox = modalBackdrop.querySelector('#kanban-editor-box');
+    const editorContainer = modalBackdrop.querySelector('#kanban-live-editor');
     const charCounter = modalBackdrop.querySelector('#kanban-char-counter');
     const colSelect = modalBackdrop.querySelector('#task-col-select');
     const prioSelect = modalBackdrop.querySelector('#task-prio-select');
     const saveBtn = modalBackdrop.querySelector('#task-save-btn');
 
-    // Inherit textarea font into backdrop for exact glyph wrapping
-    const taStyle = window.getComputedStyle(descInput);
-    if (taStyle.fontFamily) {
-      descBackdrop.style.setProperty('font-family', taStyle.fontFamily, 'important');
-    }
+    let liveEditor = null;
 
     function updateCounterAndHighlight() {
       const titleVal = titleInput.value.trim();
-      const descVal = descInput.value;
+      const descVal = liveEditor ? liveEditor.getValue() : (task?.description || '');
       const colVal = colSelect.value;
       const prioVal = prioSelect.value;
 
@@ -2589,56 +2926,32 @@
 
       if (remaining < 0) {
         charCounter.classList.add('is-overflow');
-        editorBox.classList.add('has-overflow');
+        editorContainer.classList.add('has-overflow');
         saveBtn.disabled = true;
         saveBtn.style.opacity = '0.5';
         saveBtn.style.cursor = 'not-allowed';
         saveBtn.title = `Description exceeds Telegram caption limit by ${-remaining} characters`;
       } else {
         charCounter.classList.remove('is-overflow');
-        editorBox.classList.remove('has-overflow');
+        editorContainer.classList.remove('has-overflow');
         saveBtn.disabled = false;
         saveBtn.style.opacity = '';
         saveBtn.style.cursor = '';
         saveBtn.removeAttribute('title');
       }
-
-      descBackdrop.innerHTML = renderEditorBackdrop(descVal, maxDesc);
-      descBackdrop.scrollTop = descInput.scrollTop;
     }
 
-    descInput.addEventListener('input', updateCounterAndHighlight);
-    descInput.addEventListener('scroll', () => {
-      descBackdrop.scrollTop = descInput.scrollTop;
-      descBackdrop.scrollLeft = descInput.scrollLeft;
+    liveEditor = createLiveMarkdownEditor({
+      container: editorContainer,
+      initialText: task?.description || '',
+      onChange: () => updateCounterAndHighlight()
     });
+
     titleInput.addEventListener('input', updateCounterAndHighlight);
     colSelect.addEventListener('change', updateCounterAndHighlight);
     prioSelect.addEventListener('change', updateCounterAndHighlight);
 
     updateCounterAndHighlight();
-
-    const tabWrite = modalBackdrop.querySelector('#modal-tab-write');
-    const tabPreview = modalBackdrop.querySelector('#modal-tab-preview');
-    const writeWrap = modalBackdrop.querySelector('#modal-desc-write-wrap');
-    const previewWrap = modalBackdrop.querySelector('#modal-desc-preview-wrap');
-    const previewContent = modalBackdrop.querySelector('#modal-md-preview-content');
-
-    tabWrite.onclick = () => {
-      tabWrite.classList.add('is-active');
-      tabPreview.classList.remove('is-active');
-      writeWrap.style.display = 'block';
-      previewWrap.style.display = 'none';
-      updateCounterAndHighlight();
-    };
-
-    tabPreview.onclick = () => {
-      tabPreview.classList.add('is-active');
-      tabWrite.classList.remove('is-active');
-      writeWrap.style.display = 'none';
-      previewWrap.style.display = 'block';
-      previewContent.innerHTML = renderMarkdown(descInput.value, task?.mid);
-    };
 
     const coverBox = modalBackdrop.querySelector('#task-cover-box');
     const fileInput = modalBackdrop.querySelector('#task-cover-file-input');
@@ -2664,7 +2977,7 @@
       if (saveBtn.disabled) return;
 
       const title = titleInput.value.trim();
-      const desc = descInput.value.trim();
+      const desc = liveEditor ? liveEditor.getValue().trim() : '';
       const col = colSelect.value;
       const prio = prioSelect.value || null;
 
@@ -2911,15 +3224,17 @@
 
   function setupGlobalChecklistListener() {
     document.addEventListener('click', (e) => {
-      const checkbox = e.target.closest('.kanban-checklist-checkbox');
+      const checkbox = e.target.closest('.kanban-checklist-checkbox, .kanban-row-checkbox');
       if (!checkbox) return;
+      if (checkbox.closest('#kanban-live-editor')) return;
+
       e.stopPropagation();
 
-      const row = checkbox.closest('.kanban-checklist-row');
+      const row = checkbox.closest('.kanban-checklist-row, .kanban-row-checklist');
       if (!row) return;
 
       const taskMid = row.dataset.taskMid;
-      const lineIdx = Number(row.dataset.lineIndex);
+      const lineIdx = Number(row.dataset.lineIndex || row.dataset.checkLine);
       if (!taskMid || isNaN(lineIdx)) return;
 
       const task = state.tasks.get(Number(taskMid)) || state.tasks.get(taskMid);
@@ -2929,11 +3244,11 @@
       if (lineIdx >= 0 && lineIdx < lines.length) {
         const curLine = lines[lineIdx];
         let isNowChecked = false;
-        if (curLine.match(/^(\s*[-*]\s+\[) \](\s+.*)$/)) {
-          lines[lineIdx] = curLine.replace(/^(\s*[-*]\s+\[) \](\s+.*)$/, '$1x]$2');
+        if (/^(\s*[-*]\s+\[) \](.*)$/.test(curLine)) {
+          lines[lineIdx] = curLine.replace(/^(\s*[-*]\s+\[) \](.*)$/, '$1x]$2');
           isNowChecked = true;
-        } else if (curLine.match(/^(\s*[-*]\s+\[)[xX]\](\s+.*)$/)) {
-          lines[lineIdx] = curLine.replace(/^(\s*[-*]\s+\[)[xX]\](\s+.*)$/, '$1 ]$2');
+        } else if (/^(\s*[-*]\s+\[)[xX]\](.*)$/.test(curLine)) {
+          lines[lineIdx] = curLine.replace(/^(\s*[-*]\s+\[)[xX]\](.*)$/, '$1 ]$2');
           isNowChecked = false;
         }
 
@@ -2943,7 +3258,7 @@
 
         checkbox.checked = isNowChecked;
         row.classList.toggle('is-checked', isNowChecked);
-        const textSpan = row.querySelector('.kanban-checklist-text');
+        const textSpan = row.querySelector('.kanban-checklist-text, .kanban-row-checktext');
         if (textSpan) {
           textSpan.classList.toggle('strikethrough', isNowChecked);
         }
