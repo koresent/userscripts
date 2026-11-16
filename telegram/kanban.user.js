@@ -1832,6 +1832,7 @@
       display: none;
       flex: 1;
       height: 100%;
+      min-height: 0;
       flex-direction: column;
       overflow: hidden;
       position: relative;
@@ -1942,6 +1943,7 @@
 
     .kanban-columns-container {
       flex: 1;
+      min-height: 0;
       display: flex;
       gap: 16px;
       padding: 8px 16px 16px 16px;
@@ -1949,6 +1951,25 @@
       overflow-y: hidden;
       align-items: stretch;
       box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+    }
+
+    .kanban-columns-container::-webkit-scrollbar {
+      height: 8px;
+    }
+
+    .kanban-columns-container::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .kanban-columns-container::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }
+
+    .kanban-columns-container::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.35);
     }
 
     .kanban-column {
@@ -1965,6 +1986,7 @@
       overflow: hidden;
       position: relative;
       box-sizing: border-box;
+      flex-shrink: 0;
     }
 
     .kanban-column-header {
@@ -1976,6 +1998,7 @@
       user-select: none;
       cursor: grab;
       position: relative;
+      flex-shrink: 0;
     }
 
     .kanban-column-title-wrap {
@@ -2050,13 +2073,34 @@
     }
 
     .kanban-column-cards {
-      flex: 1;
+      flex: 1 1 auto;
+      min-height: 0;
       padding: 10px;
       overflow-y: auto;
+      overflow-x: hidden;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      min-height: 50px;
+      box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+    }
+
+    .kanban-column-cards::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .kanban-column-cards::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .kanban-column-cards::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 3px;
+    }
+
+    .kanban-column-cards::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.35);
     }
 
     .kanban-card {
@@ -2068,6 +2112,8 @@
       position: relative;
       transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
       overflow: hidden;
+      flex-shrink: 0;
+      box-sizing: border-box;
     }
 
     .kanban-card:hover {
@@ -2338,6 +2384,7 @@
       justify-content: center;
       cursor: pointer;
       transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      flex-shrink: 0;
     }
 
     .kanban-add-card-btn:hover {
@@ -2355,6 +2402,7 @@
       border-radius: 8px;
       margin: 6px 10px 10px 10px;
       border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+      flex-shrink: 0;
     }
 
     .kanban-inline-input {
