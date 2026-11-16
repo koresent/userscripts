@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name           ⚙ [Telegram Web K] Tweaks
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
-// @description    All-in-one tweaks for Telegram Web K: Avatar online ring, No Stories, and Chat Exporter
+// @version        1.1.0
+// @description    All-in-one tweaks for Telegram Web K: Avatar online ring, No Stories, Hide All Chats folder, and Chat Exporter
 // @author         Koresent
 // @license        GPL-3.0
 // @icon           https://web.telegram.org/favicon.ico
@@ -30,6 +30,7 @@
   const config = {
     avatarRing: GM_getValue('avatarRing', true),
     noStories: GM_getValue('noStories', true),
+    hideAllChats: GM_getValue('hideAllChats', true),
     chatExport: GM_getValue('chatExport', true)
   };
 
@@ -43,6 +44,8 @@
       value ? AvatarRingModule.enable() : AvatarRingModule.disable();
     } else if (key === 'noStories') {
       value ? NoStoriesModule.enable() : NoStoriesModule.disable();
+    } else if (key === 'hideAllChats') {
+      value ? HideAllChatsModule.enable() : HideAllChatsModule.disable();
     } else if (key === 'chatExport') {
       value ? ChatExportModule.enable() : ChatExportModule.disable();
     }
@@ -69,6 +72,13 @@
       GM_registerMenuCommand(
         `${config.noStories ? '✅' : '❌'} Hide Stories`,
         () => updateConfig('noStories', !config.noStories)
+      )
+    );
+
+    menuIds.push(
+      GM_registerMenuCommand(
+        `${config.hideAllChats ? '✅' : '❌'} Hide 'All Chats' folder`,
+        () => updateConfig('hideAllChats', !config.hideAllChats)
       )
     );
 
@@ -738,6 +748,114 @@
   })();
 
   /* -------------------------------------------------------------------------- */
+  /* MODULE: Hide 'All Chats' Folder                                            */
+  /* -------------------------------------------------------------------------- */
+  const HideAllChatsModule = (function () {
+    const STYLE_ID = 'tweb-hide-all-chats-style';
+
+    const CSS_STYLES = `
+      /* Hide 'All Chats' folder tab in vertical folders sidebar */
+      .folders-sidebar__folder-item[data-filter-id="0"] {
+        display: none !important;
+      }
+
+      /* Hide 'All Chats' folder tab in horizontal folders bar */
+      .menu-horizontal-div-item[data-filter-id="0"] {
+        display: none !important;
+      }
+    `;
+
+    let observer = null;
+    let isRunning = false;
+
+    function injectStyles() {
+      if (document.getElementById(STYLE_ID)) return;
+      const style = document.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent = CSS_STYLES;
+      (document.head || document.documentElement).appendChild(style);
+    }
+
+    function removeStyles() {
+      const style = document.getElementById(STYLE_ID);
+      if (style) style.remove();
+    }
+
+    function ensureVisibleFolderActive() {
+      if (!isRunning) return;
+      const selectedAllChats = document.querySelector(
+        '.folders-sidebar__folder-item--selected[data-filter-id="0"], .menu-horizontal-div-item.active[data-filter-id="0"]'
+      );
+      if (selectedAllChats) {
+        const targetFolder = document.querySelector(
+          '.folders-sidebar__folder-item[data-filter-id]:not([data-filter-id="0"]), .menu-horizontal-div-item[data-filter-id]:not([data-filter-id="0"])'
+        );
+        if (targetFolder) {
+          targetFolder.click();
+        }
+      }
+    }
+
+    function observeFolders() {
+      if (observer) observer.disconnect();
+      observer = new MutationObserver(() => {
+        if (!isRunning) return;
+        ensureVisibleFolderActive();
+      });
+
+      const root =
+        document.getElementById('folders-sidebar') ||
+        document.getElementById('main-columns') ||
+        document.body;
+      if (root) {
+        observer.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class']
+        });
+        ensureVisibleFolderActive();
+      } else {
+        setTimeout(observeFolders, 300);
+      }
+    }
+
+    function enable() {
+      if (isRunning) return;
+      isRunning = true;
+      injectStyles();
+      if (document.readyState === 'loading') {
+        document.addEventListener(
+          'DOMContentLoaded',
+          () => {
+            observeFolders();
+            ensureVisibleFolderActive();
+          },
+          { once: true }
+        );
+      } else {
+        observeFolders();
+        ensureVisibleFolderActive();
+      }
+    }
+
+    function disable() {
+      if (!isRunning) return;
+      isRunning = false;
+      removeStyles();
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+    }
+
+    return {
+      enable,
+      disable
+    };
+  })();
+
+  /* -------------------------------------------------------------------------- */
   /* MODULE: Chat Exporter (Lazy MTProto & UI)                                  */
   /* -------------------------------------------------------------------------- */
   const ChatExportModule = (function () {
@@ -1259,6 +1377,10 @@
 
   if (config.noStories) {
     NoStoriesModule.enable();
+  }
+
+  if (config.hideAllChats) {
+    HideAllChatsModule.enable();
   }
 
   if (config.chatExport) {
