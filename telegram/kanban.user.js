@@ -1157,22 +1157,20 @@
           const raw = apiProxy.getMessageByPeer(myId, mid);
           if (raw?.message) {
             const hasTag = KANBAN_BOARDS_REGEX.test(raw.message);
-            const lines = raw.message.split('\n');
-            const hasLinks = lines.some((l) => parseBoardTarget(l) !== null);
 
-            if (hasTag || hasLinks) {
+            if (hasTag) {
               state.boardsRegistryMid = raw.mid || raw.id;
 
               let jsonBoards = [];
-              if (hasTag) {
-                try {
-                  const match = raw.message.match(KANBAN_BOARDS_REGEX);
-                  const parsed = JSON.parse(match[1]);
-                  if (Array.isArray(parsed)) {
-                    jsonBoards = parsed;
-                  }
-                } catch (_) {}
-              }
+              try {
+                const match = raw.message.match(KANBAN_BOARDS_REGEX);
+                const parsed = JSON.parse(match[1]);
+                if (Array.isArray(parsed)) {
+                  jsonBoards = parsed;
+                }
+              } catch (_) {}
+
+              const lines = raw.message.split('\n');
 
               for (const line of lines) {
                 const target = parseBoardTarget(line);
@@ -3023,7 +3021,10 @@
   function activateKanbanView() {
     state.isKanbanActive = true;
     const mainCols = document.getElementById('main-columns');
-    if (mainCols) mainCols.classList.add('is-kanban');
+    if (mainCols) {
+      mainCols.classList.remove('is-wishlist');
+      mainCols.classList.add('is-kanban');
+    }
 
     document.querySelectorAll('#folders-sidebar .folders-sidebar__folder-item--selected').forEach((el) => {
       el.classList.remove('folders-sidebar__folder-item--selected');
