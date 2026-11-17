@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name           🎁 [Telegram Web K] Wishlist
+// @name           ⚙ [Telegram Web K] Wishlist
 // @namespace      github.com/koresent/userscripts
 // @version        1.0.0
 // @description    Native multi-board Wishlist tables inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
@@ -52,7 +52,7 @@
   const WISHLIST_BOARDS_REGEX = /<!--wishlist-boards:(.*?)-->/;
 
   const ICONS = {
-    gift: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M20 6h-2.18c.11-.31.18-.65.18-1 0-1.66-1.34-3-3-3-1.05 0-1.96.54-2.5 1.35l-.5.65-.5-.65C10.96 2.54 10.05 2 9 2 7.34 2 6 3.34 6 5c0 .35.07.69.18 1H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-5-2c.55 0 1 .45 1 1s-.45 1-1 1h-2.22l.8-1.06c.33-.42.84-.94 1.42-.94zm-6 0c.58 0 1.09.52 1.42.94l.8 1.06H9c-.55 0-1-.45-1-1s.45-1 1-1zm11 15H4v-2h16v2zm0-5H4V8h5.08L7 10.83 8.62 12 11 8.76V12h2V8.76L15.38 12 17 10.83 14.92 8H20v6z"/></svg>`,
+    wishlist: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>`,
     plus: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`,
     settings: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
     refresh: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>`,
@@ -427,7 +427,7 @@
           })
           .join('\n');
 
-        const text = `🎁 Telegram Wishlist Registry\nThis message maintains your active Wishlist chats and topics.\n\n${linksList}\n\n---\n<!--wishlist-boards:${JSON.stringify(payload)}-->`;
+        const text = `⚙️ **Wishlist Boards Configuration**\nDo not delete this message if you use Wishlist.\n\n${linksList}\n\n---\n<!--wishlist-boards:${JSON.stringify(payload)}-->`;
 
         let msgToEdit = null;
         if (state.boardsRegistryMid && apiProxy) {
@@ -1189,7 +1189,7 @@
 
     const displayBoards = (Array.isArray(state.boards) && state.boards.length > 0)
       ? state.boards
-      : [{ id: 'default', title: 'Wishlist', emojiRaw: '🎁' }];
+      : [{ id: 'default', title: 'Wishlist', emojiRaw: null }];
 
     const renderedKey = displayBoards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeWishlistId}|isWishlist:${state.isWishlistActive}`;
     if (group.dataset.renderedKey === renderedKey && group.children.length > 0) {
@@ -1208,7 +1208,7 @@
         const shortTitle = b.title ? (b.title.length > 8 ? b.title.slice(0, 7) + '…' : b.title) : 'Wishlist';
         const iconHtml = b.emojiRaw
           ? `<span style="font-size:20px;line-height:24px;display:flex;align-items:center;justify-content:center;">${b.emojiRaw}</span>`
-          : ICONS.gift;
+          : ICONS.wishlist;
         return `
           <div class="folders-sidebar__folder-item rp wishlist-tab ${isSelected ? 'folders-sidebar__folder-item--selected' : ''}"
                role="tab" tabindex="0" data-wishlist-id="${b.id}" title="${escapeHtml(b.title || 'Wishlist')}">
@@ -1294,7 +1294,7 @@
     if (!state.boards || state.boards.length === 0) {
       container.innerHTML = `
         <div class="wishlist-empty-state" style="margin:auto;">
-          ${ICONS.gift}
+          ${ICONS.wishlist}
           <div style="font-size:16px;font-weight:600;color:var(--text-color, #ebdbb2);">No Wishlist Boards</div>
           <div style="max-width:360px;line-height:1.5;">
             Configure your Wishlist chat or topic in Settings to start tracking your wishlist.
@@ -1311,7 +1311,7 @@
     const boardTitle = currentBoard?.title || 'Wishlist';
     const headerIcon = currentBoard?.emojiRaw
       ? `<span style="font-size:16px;line-height:1;display:inline-flex;align-items:center;">${currentBoard.emojiRaw}</span>`
-      : ICONS.gift;
+      : ICONS.wishlist;
 
     const allItems = Array.from(state.items.values());
     const activeCount = allItems.filter((i) => !i.purchased).length;
@@ -1694,7 +1694,7 @@
           const link = b.topicId ? `https://t.me/c/${rawId}/${b.topicId}` : `https://t.me/c/${rawId}`;
           return `
             <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:10px;">
-              <input type="text" class="wishlist-inline-input" style="width:40px;text-align:center;font-size:16px;" data-board-emoji="${idx}" value="${escapeHtml(b.emojiRaw || '🎁')}">
+              <input type="text" class="wishlist-inline-input" style="width:40px;text-align:center;font-size:16px;" data-board-emoji="${idx}" value="${escapeHtml(b.emojiRaw || '')}" placeholder="Icon">
               <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
                 <input type="text" class="wishlist-inline-input" style="font-weight:600;" data-board-title="${idx}" value="${escapeHtml(b.title || 'Wishlist')}" placeholder="Wishlist title...">
                 <input type="text" class="wishlist-inline-input" style="font-size:12px;color:var(--secondary-text-color, #a89984);" data-board-link="${idx}" value="${escapeHtml(link)}" placeholder="https://t.me/c/<id>/<topic>">
@@ -1708,7 +1708,7 @@
       listContainer.querySelectorAll('[data-board-emoji]').forEach((inp) => {
         inp.onchange = (e) => {
           const idx = Number(inp.getAttribute('data-board-emoji'));
-          if (localBoards[idx]) localBoards[idx].emojiRaw = e.target.value.trim() || '🎁';
+          if (localBoards[idx]) localBoards[idx].emojiRaw = e.target.value.trim() || null;
         };
       });
 
@@ -1780,7 +1780,7 @@
             peerId: target.peerId,
             topicId: target.topicId,
             title: 'Wishlist',
-            emojiRaw: '🎁'
+            emojiRaw: null
           });
           renderBoardsList();
         } else {
