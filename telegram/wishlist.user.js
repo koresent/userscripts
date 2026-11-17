@@ -1,14 +1,23 @@
 // ==UserScript==
-// @name         🎁 [Telegram Web K] Wishlist
-// @namespace    https://github.com/koresent
-// @version      1.0.0
-// @description  Interactive Wishlist tables in Telegram Web K stored in your chats
-// @author       koresent
-// @match        https://web.telegram.org/k/
-// @match        https://web.telegram.org/k/*
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @run-at       document-end
+// @name           🎁 [Telegram Web K] Wishlist
+// @namespace      github.com/koresent/userscripts
+// @version        1.0.0
+// @description    Native multi-board Wishlist tables inside Telegram Web K backed by Saved Messages registry, forum topics, and MTProto
+// @author         Koresent
+// @license        GPL-3.0
+// @icon           https://web.telegram.org/favicon.ico
+// @homepageURL    https://github.com/koresent/userscripts
+// @supportURL     https://github.com/koresent/userscripts/issues
+// @updateURL      https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/telegram/wishlist.user.js
+// @downloadURL    https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/telegram/wishlist.user.js
+//
+// @match          https://web.telegram.org/k/*
+//
+// @run-at         document-idle
+//
+// @grant          GM_getValue
+// @grant          GM_setValue
+// @grant          unsafeWindow
 // ==/UserScript==
 
 (function () {
@@ -1178,21 +1187,24 @@
       }
     }
 
-    if (!Array.isArray(state.boards) || state.boards.length === 0) {
-      group.innerHTML = '';
-      delete group.dataset.renderedKey;
-      return;
-    }
+    const displayBoards = (Array.isArray(state.boards) && state.boards.length > 0)
+      ? state.boards
+      : [{ id: 'default', title: 'Wishlist', emojiRaw: '🎁' }];
 
-    const renderedKey = state.boards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeWishlistId}|isWishlist:${state.isWishlistActive}`;
+    const renderedKey = displayBoards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeWishlistId}|isWishlist:${state.isWishlistActive}`;
     if (group.dataset.renderedKey === renderedKey && group.children.length > 0) {
+      group.querySelectorAll('.wishlist-tab').forEach((tab) => {
+        const bId = tab.getAttribute('data-wishlist-id');
+        const isSelected = state.isWishlistActive && (state.activeWishlistId === bId || (!state.activeWishlistId && bId === 'default'));
+        tab.classList.toggle('folders-sidebar__folder-item--selected', isSelected);
+      });
       return;
     }
     group.dataset.renderedKey = renderedKey;
 
-    const tabsHtml = state.boards
+    const tabsHtml = displayBoards
       .map((b) => {
-        const isSelected = state.isWishlistActive && state.activeWishlistId === b.id;
+        const isSelected = state.isWishlistActive && (state.activeWishlistId === b.id || (!state.activeWishlistId && b.id === 'default'));
         const shortTitle = b.title ? (b.title.length > 8 ? b.title.slice(0, 7) + '…' : b.title) : 'Wishlist';
         const iconHtml = b.emojiRaw
           ? `<span style="font-size:20px;line-height:24px;display:flex;align-items:center;justify-content:center;">${b.emojiRaw}</span>`
@@ -1216,7 +1228,11 @@
         e.stopPropagation();
         const wishlistId = tab.getAttribute('data-wishlist-id');
         activateWishlistView();
-        await api.selectWishlist(wishlistId);
+        if (wishlistId && wishlistId !== 'default') {
+          await api.selectWishlist(wishlistId);
+        } else {
+          renderWishlistView();
+        }
       };
     });
   }
@@ -1251,6 +1267,7 @@
     document.querySelectorAll('.wishlist-tab').forEach((el) => {
       el.classList.remove('folders-sidebar__folder-item--selected');
     });
+    renderSidebarTabs();
   }
 
   function ensureWishlistDOM() {
@@ -1343,6 +1360,10 @@
       .map(([cur, sum]) => `${formatPriceNumber(sum)} ${getCurrencySymbol(cur)}`)
       .join(' + ') || '0 ₽';
 
+    const activeSearch = document.activeElement && document.activeElement.id === 'wishlist-search' ? document.activeElement : null;
+    const searchSelStart = activeSearch ? activeSearch.selectionStart : null;
+    const searchSelEnd = activeSearch ? activeSearch.selectionEnd : null;
+
     container.innerHTML = `
       <div class="wishlist-header">
         <div class="wishlist-header-left">
@@ -1399,6 +1420,18 @@
     `;
 
     bindTableEvents();
+
+    if (activeSearch) {
+      const newSearch = container.querySelector('#wishlist-search');
+      if (newSearch) {
+        newSearch.focus();
+        if (searchSelStart !== null && searchSelEnd !== null) {
+          try {
+            newSearch.setSelectionRange(searchSelStart, searchSelEnd);
+          } catch (_) {}
+        }
+      }
+    }
   }
 
   function renderSortIcon(field) {

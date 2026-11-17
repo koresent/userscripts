@@ -7,11 +7,17 @@
 // @license        GPL-3.0
 // @icon           https://web.telegram.org/favicon.ico
 // @homepageURL    https://github.com/koresent/userscripts
+// @supportURL     https://github.com/koresent/userscripts/issues
+// @updateURL      https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/telegram/kanban.user.js
+// @downloadURL    https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/telegram/kanban.user.js
+//
 // @match          https://web.telegram.org/k/*
+//
 // @run-at         document-idle
-// @grant          unsafeWindow
+//
 // @grant          GM_getValue
 // @grant          GM_setValue
+// @grant          unsafeWindow
 // ==/UserScript==
 
 (function () {
@@ -2975,21 +2981,24 @@
       }
     }
 
-    if (!Array.isArray(state.boards) || state.boards.length === 0) {
-      group.innerHTML = '';
-      delete group.dataset.renderedKey;
-      return;
-    }
+    const displayBoards = (Array.isArray(state.boards) && state.boards.length > 0)
+      ? state.boards
+      : [{ id: 'default', title: 'Kanban', emojiRaw: null }];
 
-    const renderedKey = state.boards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeBoardId}|isKanban:${state.isKanbanActive}`;
+    const renderedKey = displayBoards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeBoardId}|isKanban:${state.isKanbanActive}`;
     if (group.dataset.renderedKey === renderedKey && group.children.length > 0) {
+      group.querySelectorAll('.kanban-board-tab').forEach((tab) => {
+        const bId = tab.getAttribute('data-board-id');
+        const isSelected = state.isKanbanActive && (state.activeBoardId === bId || (!state.activeBoardId && bId === 'default'));
+        tab.classList.toggle('folders-sidebar__folder-item--selected', isSelected);
+      });
       return;
     }
     group.dataset.renderedKey = renderedKey;
 
-    const tabsHtml = state.boards
+    const tabsHtml = displayBoards
       .map((b) => {
-        const isSelected = state.isKanbanActive && state.activeBoardId === b.id;
+        const isSelected = state.isKanbanActive && (state.activeBoardId === b.id || (!state.activeBoardId && b.id === 'default'));
         const shortTitle = b.title ? (b.title.length > 8 ? b.title.slice(0, 7) + '…' : b.title) : 'Kanban';
         const iconHtml = b.emojiRaw
           ? `<span style="font-size:20px;line-height:24px;display:flex;align-items:center;justify-content:center;">${b.emojiRaw}</span>`
@@ -3013,7 +3022,11 @@
         e.stopPropagation();
         const boardId = tab.getAttribute('data-board-id');
         activateKanbanView();
-        await api.selectBoard(boardId);
+        if (boardId && boardId !== 'default') {
+          await api.selectBoard(boardId);
+        } else {
+          renderKanbanView();
+        }
       };
     });
   }
@@ -3049,6 +3062,7 @@
     document.querySelectorAll('.kanban-board-tab').forEach((el) => {
       el.classList.remove('folders-sidebar__folder-item--selected');
     });
+    renderSidebarTabs();
   }
 
   function ensureKanbanDOM() {
