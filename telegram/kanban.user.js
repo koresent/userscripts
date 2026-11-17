@@ -101,6 +101,7 @@
     textDesc: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 18h12v-2H3v2zM3 6v2h18V6H3zm0 7h18v-2H3v2z"/></svg>`,
     checklist: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
+    move: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg>`,
     edit: `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`,
     close: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
     image: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`
@@ -1228,17 +1229,6 @@
           }
         }
 
-        if (!state.boardsRegistryMid && foundBoards.length === 0) {
-          const initialText = `📋 Telegram Kanban Boards Registry\nAdd your board links here (e.g. https://t.me/c/<channel_id>/<topic_id>):\n\n---\n<!--kanban-boards:[]-->`;
-          const sent = await mm.sendText({
-            peerId: myId,
-            text: initialText
-          });
-          if (sent?.message) {
-            state.boardsRegistryMid = sent.message.mid || sent.message.id;
-          }
-        }
-
         state.boards = foundBoards;
 
         const pm = win.rootScope?.managers?.appPeersManager;
@@ -1754,6 +1744,8 @@
       try {
         await mm.deleteMessages(state.peerId, [task.mid], true);
         state.tasks.delete(task.mid);
+        state.tasks.delete(String(task.mid));
+        state.tasks.delete(Number(task.mid));
         renderKanbanView();
       } catch (err) {
         console.error('[Kanban] Delete task error, queueing into outbox:', err);
@@ -1765,6 +1757,106 @@
           mid: task.mid
         });
         setStoredOutbox(outbox);
+      }
+    },
+
+    async moveTaskToBoard(task, targetBoardId) {
+      const targetBoard = state.boards.find((b) => b.id === targetBoardId);
+      if (!targetBoard || !task || !state.peerId) return;
+
+      const { mm, apiProxy, afm } = this.getManagers();
+      if (!mm || !apiProxy) return;
+
+      task.syncStatus = 'syncing';
+      renderKanbanView();
+
+      try {
+        await ensureChatLoaded(targetBoard.peerId);
+
+        let targetCol = DEFAULT_COLUMNS[0].id;
+        try {
+          const pinned = await mm.getPinnedMessage(targetBoard.peerId, targetBoard.topicId || undefined);
+          if (pinned?.maxId) {
+            const msg = apiProxy.getMessageByPeer(targetBoard.peerId, pinned.maxId);
+            if (msg?.message && KANBAN_CONFIG_REGEX.test(msg.message)) {
+              const match = msg.message.match(KANBAN_CONFIG_REGEX);
+              const parsed = parseConfigJson(match[1]);
+              if (Array.isArray(parsed?.columns) && parsed.columns.length > 0) {
+                targetCol = parsed.columns[0].id;
+              }
+            }
+          }
+        } catch (_) {}
+
+        let topPos = 1000;
+        try {
+          const res = await mm.getHistory({
+            peerId: targetBoard.peerId,
+            threadId: targetBoard.topicId || undefined,
+            limit: 40,
+            offsetId: 0
+          });
+          if (Array.isArray(res?.history)) {
+            let minPos = Infinity;
+            for (const mid of res.history) {
+              const rawMsg = apiProxy.getMessageByPeer(targetBoard.peerId, mid);
+              const parsed = parseTaskFromMessage(rawMsg);
+              if (parsed && parsed.col === targetCol) {
+                if (typeof parsed.pos === 'number' && parsed.pos < minPos) {
+                  minPos = parsed.pos;
+                }
+              }
+            }
+            if (minPos !== Infinity) {
+              topPos = minPos - 1000;
+            }
+          }
+        } catch (_) {}
+
+        const meta = { col: targetCol, pos: topPos };
+        if (task.prio) meta.prio = task.prio;
+        const caption = serializeTaskCaption(task.title, task.description, meta);
+
+        let fileToUpload = null;
+        if (task.hasRealCover) {
+          if (!task.coverUrl && task.photo && task.coverThumb && afm) {
+            try {
+              task.coverUrl = await afm.downloadMediaURL({ media: task.photo, thumb: task.coverThumb });
+            } catch (_) {}
+          }
+          if (task.coverUrl) {
+            try {
+              const res = await fetch(task.coverUrl);
+              const blob = await res.blob();
+              fileToUpload = new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' });
+            } catch (_) {}
+          }
+        }
+
+        if (!fileToUpload) {
+          const blob = await create1x1PixelBlob();
+          fileToUpload = new File([blob], 'cover_1x1.png', { type: 'image/png' });
+        }
+
+        const sendResult = await mm.sendFile({
+          peerId: targetBoard.peerId,
+          threadId: targetBoard.topicId || undefined,
+          file: fileToUpload,
+          caption: caption,
+          isMedia: true
+        });
+
+        if (sendResult?.message) {
+          closeActiveModal();
+          await this.deleteTask(task);
+        } else {
+          throw new Error('Message sending returned no confirmation');
+        }
+      } catch (err) {
+        console.error('[Kanban] Move task error:', err);
+        task.syncStatus = 'error';
+        renderKanbanView();
+        alert('Could not move task to target board: ' + (err.message || err));
       }
     },
 
@@ -2122,33 +2214,90 @@
       border-color: rgba(255, 255, 255, 0.12);
     }
 
-    .kanban-card-quick-del {
+    .kanban-card-quick-actions {
       position: absolute;
       top: 6px;
       right: 6px;
-      width: 24px;
-      height: 24px;
-      border-radius: 6px;
-      background: rgba(0, 0, 0, 0.45);
-      border: none;
-      color: #ea6962;
       display: flex;
       align-items: center;
-      justify-content: center;
-      cursor: pointer;
+      gap: 4px;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.15s ease, background 0.15s ease;
+      transition: opacity 0.15s ease;
       z-index: 5;
     }
 
-    .kanban-card:hover .kanban-card-quick-del {
+    .kanban-card:hover .kanban-card-quick-actions {
       opacity: 1;
       pointer-events: auto;
     }
 
+    .kanban-card-quick-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.55);
+      border: none;
+      color: var(--secondary-text-color, #a89984);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+    }
+
+    .kanban-card-quick-btn:hover {
+      background: rgba(0, 0, 0, 0.85);
+    }
+
+    .kanban-card-quick-move:hover {
+      color: var(--accent-color, #7daea3);
+    }
+
+    .kanban-card-quick-del {
+      color: #ea6962;
+    }
+
     .kanban-card-quick-del:hover {
-      background: rgba(234, 105, 98, 0.25);
+      background: rgba(234, 105, 98, 0.25) !important;
+      color: #fff !important;
+    }
+
+    .kanban-card-move-dropdown {
+      background: #32302f;
+      border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      min-width: 180px;
+      max-width: 260px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .kanban-move-dropdown-header {
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--secondary-text-color, #a89984);
+      border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    }
+
+    .kanban-move-board-item {
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--text-color, #ebdbb2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      transition: background 0.1s ease, color 0.1s ease;
+    }
+
+    .kanban-move-board-item:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--accent-color, #7daea3);
     }
 
     .kanban-card-cover {
@@ -2172,7 +2321,7 @@
       color: var(--text-color, #ebdbb2);
       line-height: 1.4;
       word-break: break-word;
-      padding-right: 18px;
+      padding-right: 56px;
     }
 
     .kanban-card-checklists {
@@ -2809,27 +2958,33 @@
     if (!scrollable) return;
 
     let group = document.getElementById('folders-sidebar-kanban-group');
-    if (!group) {
-      group = document.createElement('div');
-      group.id = 'folders-sidebar-kanban-group';
-      group.className = 'folders-sidebar-kanban-group';
+    if (!group || !scrollable.contains(group)) {
+      if (!group) {
+        group = document.createElement('div');
+        group.id = 'folders-sidebar-kanban-group';
+        group.className = 'folders-sidebar-kanban-group';
+      }
       scrollable.appendChild(group);
 
-      scrollable.addEventListener('click', (e) => {
-        const clickedItem = e.target.closest('.folders-sidebar__folder-item');
-        if (clickedItem && !clickedItem.classList.contains('kanban-board-tab')) {
-          deactivateKanbanView();
-        }
-      });
+      if (!group.dataset.hasClickListener) {
+        group.dataset.hasClickListener = '1';
+        scrollable.addEventListener('click', (e) => {
+          const clickedItem = e.target.closest('.folders-sidebar__folder-item');
+          if (clickedItem && !clickedItem.classList.contains('kanban-board-tab')) {
+            deactivateKanbanView();
+          }
+        });
+      }
     }
 
     if (!Array.isArray(state.boards) || state.boards.length === 0) {
-      if (group.innerHTML !== '') group.innerHTML = '';
+      group.innerHTML = '';
+      delete group.dataset.renderedKey;
       return;
     }
 
     const renderedKey = state.boards.map((b) => `${b.id}:${b.title}:${b.emojiRaw || ''}`).join('|') + `|active:${state.activeBoardId}|isKanban:${state.isKanbanActive}`;
-    if (group.dataset.renderedKey === renderedKey) {
+    if (group.dataset.renderedKey === renderedKey && group.children.length > 0) {
       return;
     }
     group.dataset.renderedKey = renderedKey;
@@ -2885,6 +3040,7 @@
   }
 
   function deactivateKanbanView() {
+    closeMoveBoardMenu();
     state.isKanbanActive = false;
     const mainCols = document.getElementById('main-columns');
     if (mainCols) mainCols.classList.remove('is-kanban');
@@ -2907,6 +3063,7 @@
   }
 
   function renderKanbanView() {
+    closeMoveBoardMenu();
     const container = document.getElementById('kanban-board-container');
     if (!container || !state.isKanbanActive) return;
 
@@ -2974,6 +3131,8 @@
         const isInlineOpen = state.activeInlineCol === col.id;
         const isMenuOpen = state.activeMenuColId === col.id;
 
+        const hasOtherBoards = Array.isArray(state.boards) && state.boards.length > 1;
+
         const cardsHtml = colTasks
           .map((task) => {
             const prio = task.prio ? getPriorityById(task.prio) : null;
@@ -3005,7 +3164,10 @@
 
             return `
               <div class="kanban-card" draggable="true" data-card-mid="${task.mid}">
-                <button class="kanban-card-quick-del" data-quick-del="${task.mid}" title="Delete task">${ICONS.trash}</button>
+                <div class="kanban-card-quick-actions">
+                  ${hasOtherBoards ? `<button class="kanban-card-quick-btn kanban-card-quick-move" data-quick-move="${task.mid}" title="Move task to another board">${ICONS.move}</button>` : ''}
+                  <button class="kanban-card-quick-btn kanban-card-quick-del" data-quick-del="${task.mid}" title="Delete task">${ICONS.trash}</button>
+                </div>
                 ${showCover ? `<img class="kanban-card-cover" src="${task.coverUrl}" alt="Cover">` : ''}
                 <div class="kanban-card-body">
                   <div class="kanban-card-title">${escapeHtml(task.title)}</div>
@@ -3212,6 +3374,17 @@
       };
     });
 
+    container.querySelectorAll('[data-quick-move]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const mid = btn.getAttribute('data-quick-move');
+        const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
+        if (task) {
+          showMoveBoardMenu(btn, task);
+        }
+      };
+    });
+
     container.querySelectorAll('[data-quick-del]').forEach((btn) => {
       btn.onclick = async (e) => {
         e.stopPropagation();
@@ -3227,7 +3400,12 @@
 
     container.querySelectorAll('.kanban-card').forEach((card) => {
       card.onclick = (e) => {
-        if (e.target.closest('.kanban-checklist-checkbox') || e.target.closest('.kanban-card-quick-del')) return;
+        if (
+          e.target.closest('.kanban-checklist-checkbox') ||
+          e.target.closest('.kanban-card-quick-del') ||
+          e.target.closest('.kanban-card-quick-move') ||
+          e.target.closest('.kanban-card-quick-actions')
+        ) return;
         const mid = card.getAttribute('data-card-mid');
         const task = state.tasks.get(Number(mid)) || state.tasks.get(mid);
         if (task) showTaskModal(task);
@@ -3407,7 +3585,10 @@
           </div>
         </div>
         <div class="kanban-modal-footer">
-          ${isEdit ? `<button class="kanban-btn kanban-btn-danger" id="task-delete-btn">${ICONS.trash} Delete</button>` : '<div></div>'}
+          <div style="display:flex;gap:8px;align-items:center;">
+            ${isEdit ? `<button class="kanban-btn kanban-btn-danger" id="task-delete-btn">${ICONS.trash} Delete</button>` : ''}
+            ${isEdit && state.boards && state.boards.length > 1 ? `<button class="kanban-btn kanban-btn-secondary" id="task-modal-move-btn">${ICONS.move} Move</button>` : ''}
+          </div>
           <div style="display:flex;gap:8px;">
             <button class="kanban-btn kanban-btn-secondary" id="task-cancel-btn">Cancel</button>
             <button class="kanban-btn" id="task-save-btn">${isEdit ? 'Save Changes' : 'Create Task'}</button>
@@ -3494,6 +3675,14 @@
           await api.deleteTask(task);
         }
       };
+
+      const moveBtn = modalBackdrop.querySelector('#task-modal-move-btn');
+      if (moveBtn) {
+        moveBtn.onclick = (e) => {
+          e.stopPropagation();
+          showMoveBoardMenu(moveBtn, task);
+        };
+      }
     }
 
     saveBtn.onclick = async () => {
@@ -3625,7 +3814,73 @@
     };
   }
 
+  function closeMoveBoardMenu() {
+    const existing = document.getElementById('kanban-move-board-menu');
+    if (existing) existing.remove();
+  }
+
+  function showMoveBoardMenu(btn, task) {
+    closeMoveBoardMenu();
+    const otherBoards = (state.boards || []).filter((b) => b.id !== state.activeBoardId);
+    if (otherBoards.length === 0) return;
+
+    const rect = btn.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = 'kanban-move-board-menu';
+    menu.className = 'kanban-card-move-dropdown';
+    menu.style.position = 'fixed';
+    menu.style.zIndex = '9999';
+
+    const menuWidth = 190;
+    const left = Math.min(Math.max(8, rect.left - (menuWidth - rect.width)), window.innerWidth - menuWidth - 8);
+    const top = rect.bottom + 4 > window.innerHeight - 150 ? Math.max(8, rect.top - 4 - (otherBoards.length * 36 + 32)) : rect.bottom + 4;
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+
+    const itemsHtml = otherBoards
+      .map((b) => {
+        const icon = b.emojiRaw
+          ? `<span style="font-size:16px;line-height:1;margin-right:8px;flex-shrink:0;">${b.emojiRaw}</span>`
+          : `<span style="margin-right:8px;display:flex;align-items:center;flex-shrink:0;">${ICONS.kanban}</span>`;
+        return `
+          <div class="kanban-dropdown-item kanban-move-board-item" data-board-id="${b.id}" title="${escapeHtml(b.title || 'Kanban')}">
+            ${icon}
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;">${escapeHtml(b.title || 'Kanban')}</span>
+          </div>
+        `;
+      })
+      .join('');
+
+    menu.innerHTML = `
+      <div class="kanban-move-dropdown-header">Move to board:</div>
+      ${itemsHtml}
+    `;
+
+    document.body.appendChild(menu);
+
+    menu.querySelectorAll('.kanban-move-board-item').forEach((item) => {
+      item.onclick = async (e) => {
+        e.stopPropagation();
+        const targetBoardId = item.getAttribute('data-board-id');
+        closeMoveBoardMenu();
+        if (targetBoardId) {
+          await api.moveTaskToBoard(task, targetBoardId);
+        }
+      };
+    });
+
+    const onDocClick = (e) => {
+      if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+        closeMoveBoardMenu();
+        document.removeEventListener('click', onDocClick, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', onDocClick, true), 0);
+  }
+
   function closeActiveModal() {
+    closeMoveBoardMenu();
     const modal = document.getElementById('kanban-active-modal');
     if (modal) modal.remove();
   }
