@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.3.1
+// @version        1.4.0
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
@@ -11,103 +11,212 @@
 // @updateURL      https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/general/cursor-glide.user.js
 // @downloadURL    https://raw.githubusercontent.com/koresent/userscripts/refs/heads/main/general/cursor-glide.user.js
 //
-// @match          *://docs.google.com/document/*
-// @match          *://docs.google.com/spreadsheets/*
-// @match          *://leetcode.com/*
-// @match          *://*.leetcode.com/*
-// @match          *://github.dev/*
-// @match          *://vscode.dev/*
-// @match          *://stackblitz.com/*
-// @match          *://github.com/*
-// @match          *://*.github.com/*
-// @match          *://gitlab.com/*
-// @match          *://*.gitlab.com/*
-// @match          *://codeberg.org/*
-// @match          *://*.codeberg.org/*
-// @match          *://www.google.com/*
-// @match          *://google.com/*
-// @match          *://gemini.google.com/*
-// @match          *://aistudio.google.com/*
-// @match          *://chatgpt.com/*
-// @match          *://*.chatgpt.com/*
-// @match          *://chat.openai.com/*
-// @match          *://grok.com/*
-// @match          *://*.grok.com/*
-// @match          *://claude.ai/*
-// @match          *://*.claude.ai/*
-// @match          *://perplexity.ai/*
-// @match          *://*.perplexity.ai/*
-// @match          *://deepseek.com/*
-// @match          *://*.deepseek.com/*
-// @match          *://qwen.ai/*
-// @match          *://*.qwen.ai/*
-// @match          *://qwenlm.ai/*
-// @match          *://*.qwenlm.ai/*
-// @match          *://wikipedia.org/*
-// @match          *://*.wikipedia.org/*
-// @match          *://archlinux.org/*
-// @match          *://*.archlinux.org/*
-// @match          *://www.youtube.com/*
-// @match          *://youtube.com/*
-// @match          *://music.yandex.ru/*
-// @match          *://market.yandex.ru/*
-// @match          *://avito.ru/*
-// @match          *://*.avito.ru/*
-// @match          *://aliexpress.ru/*
-// @match          *://*.aliexpress.ru/*
-// @match          *://wildberries.ru/*
-// @match          *://*.wildberries.ru/*
-// @match          *://ozon.ru/*
-// @match          *://*.ozon.ru/*
-// @match          *://discord.com/*
-// @match          *://web.telegram.org/k/*
-// @match          *://www.reddit.com/*
-// @match          *://*.reddit.com/*
-// @match          *://lan/*
-// @match          *://*.lan/*
-// @match          *://umbra.team/*
-// @match          *://*.umbra.team/*
-// @match          *://umbra.local/*
-// @match          *://*.umbra.local/*
+// @match          *://*/*
+// @match          https://*.lan/*
+// @match          http://*.lan/*
+// @match          https://cursor.lan/*
+// @match          http://cursor.lan/*
 //
 // @run-at         document-start
 //
 // @grant          GM_getValue
 // @grant          GM_setValue
 // @grant          GM_registerMenuCommand
+// @grant          GM_unregisterMenuCommand
+// @grant          GM_addValueChangeListener
+// @grant          GM_openInTab
+// @grant          GM_setClipboard
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const CONFIG = {
-        duration: GM_getValue('duration', 150),
-        cornerRadius: GM_getValue('cornerRadius', 3.0),
-        bgOpacity: GM_getValue('bgOpacity', 0.85),
-        trailSmear: GM_getValue('trailSmear', 0.85),
-        cursorWidth: GM_getValue('cursorWidth', 2.5),
-        maxGlideDist: GM_getValue('maxGlideDist', 350),
-        customColor: GM_getValue('customColor', ''),
+    const STORAGE_KEY = 'cursor_glide_config';
+    const SETTINGS_URL = 'https://cursor.lan';
+
+    const DEFAULT_CONFIG = {
+        version: 1,
+        enabled: true,
+        duration: 150,
+        cornerRadius: 3.0,
+        bgOpacity: 0.85,
+        trailSmear: 0.85,
+        cursorWidth: 2.5,
+        maxGlideDist: 350,
+        customColor: '',
+        hideNativeCaret: true,
+        exclusions: []
     };
 
-    GM_registerMenuCommand('⚙ Configure Glide Duration', () => {
-        const val = prompt('Enter cursor glide duration (ms):', CONFIG.duration);
-        if (val !== null) {
-            const num = parseInt(val, 10);
-            if (!isNaN(num) && num > 0) {
-                GM_setValue('duration', num);
-                CONFIG.duration = num;
+    let activeConfig = loadConfig();
+
+    function loadConfig() {
+        try {
+            const stored = GM_getValue(STORAGE_KEY, null);
+            if (!stored) {
+                const legacy = {
+                    duration: GM_getValue('duration', DEFAULT_CONFIG.duration),
+                    cornerRadius: GM_getValue('cornerRadius', DEFAULT_CONFIG.cornerRadius),
+                    bgOpacity: GM_getValue('bgOpacity', DEFAULT_CONFIG.bgOpacity),
+                    trailSmear: GM_getValue('trailSmear', DEFAULT_CONFIG.trailSmear),
+                    cursorWidth: GM_getValue('cursorWidth', DEFAULT_CONFIG.cursorWidth),
+                    maxGlideDist: GM_getValue('maxGlideDist', DEFAULT_CONFIG.maxGlideDist),
+                    customColor: GM_getValue('customColor', DEFAULT_CONFIG.customColor),
+                };
+                return Object.assign({}, DEFAULT_CONFIG, legacy);
+            }
+            const parsed = typeof stored === 'string' ? JSON.parse(stored) : stored;
+            return Object.assign({}, DEFAULT_CONFIG, parsed, {
+                exclusions: Array.isArray(parsed.exclusions)
+                    ? parsed.exclusions.map(e => (typeof e === 'string' ? { pattern: e } : e))
+                    : []
+            });
+        } catch (err) {
+            return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+        }
+    }
+
+    function saveConfig(cfg) {
+        activeConfig = cfg;
+        if (Array.isArray(activeConfig.exclusions)) {
+            activeConfig.exclusions = activeConfig.exclusions.filter(e => {
+                const pat = typeof e === 'string' ? e : e?.pattern;
+                return pat && pat.trim().length > 0;
+            });
+        }
+        GM_setValue(STORAGE_KEY, JSON.stringify(cfg));
+        GM_setValue('duration', cfg.duration);
+        GM_setValue('customColor', cfg.customColor);
+        GM_setValue('cornerRadius', cfg.cornerRadius);
+        GM_setValue('bgOpacity', cfg.bgOpacity);
+        GM_setValue('trailSmear', cfg.trailSmear);
+        GM_setValue('cursorWidth', cfg.cursorWidth);
+        GM_setValue('maxGlideDist', cfg.maxGlideDist);
+    }
+
+    if (typeof GM_addValueChangeListener === 'function') {
+        GM_addValueChangeListener(STORAGE_KEY, (_name, _oldVal, newVal, remote) => {
+            if (remote && newVal) {
+                try {
+                    const parsed = typeof newVal === 'string' ? JSON.parse(newVal) : newVal;
+                    activeConfig = Object.assign({}, DEFAULT_CONFIG, parsed);
+                    handleConfigUpdate();
+                } catch (_) {}
+            }
+        });
+    }
+
+    function isUrlExcluded() {
+        if (!activeConfig.enabled) return true;
+        const currentHost = (location.hostname || '').toLowerCase();
+        const currentUrl = (location.href || '').toLowerCase();
+        if (!currentHost && !currentUrl) return false;
+
+        for (const rule of activeConfig.exclusions) {
+            const raw = (typeof rule === 'string' ? rule : rule?.pattern || '').trim().toLowerCase();
+            if (!raw) continue;
+
+            if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
+                try {
+                    const regex = new RegExp(raw.slice(1, -1), 'i');
+                    if (regex.test(currentUrl) || regex.test(currentHost)) return true;
+                } catch (_) {}
+                continue;
+            }
+
+            const pat = raw.replace(/^\*\./, '');
+            if (currentHost === pat || currentHost.endsWith('.' + pat) || currentHost.includes(pat) || currentUrl.includes(pat)) {
+                return true;
             }
         }
-    });
+        return false;
+    }
 
-    GM_registerMenuCommand('🎨 Configure Cursor Color (leave empty for auto)', () => {
-        const val = prompt('CSS Color (e.g. #7aa2f7 or empty for auto):', CONFIG.customColor);
-        if (val !== null) {
-            GM_setValue('customColor', val.trim());
-            CONFIG.customColor = val.trim();
+    let menuIds = [];
+
+    function updateMenu() {
+        if (typeof GM_registerMenuCommand !== 'function') return;
+
+        if (typeof GM_unregisterMenuCommand === 'function') {
+            menuIds.forEach(id => {
+                try { GM_unregisterMenuCommand(id); } catch (_) {}
+            });
         }
-    });
+        menuIds = [];
+
+        const host = location.hostname || 'current site';
+        const excluded = isUrlExcluded();
+
+        if (excluded) {
+            const id = GM_registerMenuCommand(`✅ Enable Cursor Glide on ${host}`, () => {
+                toggleCurrentSiteExclusion(false);
+            });
+            if (id) menuIds.push(id);
+        } else {
+            const id = GM_registerMenuCommand(`🚫 Disable Cursor Glide on ${host}`, () => {
+                toggleCurrentSiteExclusion(true);
+            });
+            if (id) menuIds.push(id);
+        }
+
+        const settingsId = GM_registerMenuCommand('⚙ Cursor Glide Settings', () => {
+            if (typeof GM_openInTab === 'function') {
+                GM_openInTab(SETTINGS_URL, { active: true });
+            } else {
+                window.open(SETTINGS_URL, '_blank');
+            }
+        });
+        if (settingsId) menuIds.push(settingsId);
+    }
+
+    function toggleCurrentSiteExclusion(shouldExclude) {
+        const host = (location.hostname || '').trim().toLowerCase();
+        if (!host) return;
+
+        if (shouldExclude) {
+            const exists = activeConfig.exclusions.some(r => {
+                const pat = (typeof r === 'string' ? r : r?.pattern || '').trim().toLowerCase();
+                return pat === host;
+            });
+            if (!exists) {
+                activeConfig.exclusions.push({ pattern: host });
+            }
+            saveConfig(activeConfig);
+            stopGlide();
+            updateMenu();
+            showToast(`Cursor Glide disabled on ${host}`);
+        } else {
+            activeConfig.exclusions = activeConfig.exclusions.filter(r => {
+                const pat = (typeof r === 'string' ? r : r?.pattern || '').trim().toLowerCase();
+                return pat !== host && !host.endsWith('.' + pat);
+            });
+            saveConfig(activeConfig);
+            startGlide();
+            updateMenu();
+            showToast(`Cursor Glide enabled on ${host}`);
+        }
+    }
+
+    function showToast(msg) {
+        let toast = document.getElementById('cursor-glide-hud-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'cursor-glide-hud-toast';
+            toast.style.cssText = `
+                all: initial; position: fixed; bottom: 16px; right: 16px;
+                background: #1d2021; color: #ebdbb2; border: 1px solid #b8bb26;
+                border-radius: 4px; padding: 6px 14px; font-family: 'Maple Mono NF', 'JetBrains Mono', monospace;
+                font-size: 11px; z-index: 2147483647; pointer-events: none;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.5); opacity: 0;
+                transition: opacity 0.15s ease-in-out;
+            `;
+            (document.documentElement || document.body).appendChild(toast);
+        }
+        toast.textContent = msg;
+        toast.style.opacity = '1';
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1800);
+    }
 
     function easeLeading(x) {
         return 1.0 - Math.pow(1.0 - x, 4.0);
@@ -129,18 +238,23 @@
     let activeElement = null;
     let cursorColor = 'rgba(255, 255, 255, 0.85)';
 
+    let glideActive = false;
+    let glideAbortController = null;
+    let docsObserver = null;
+    let docsObserverAttached = false;
+
     function injectStyles() {
         const oldHider = document.getElementById('cursor-glide-hider');
         if (oldHider) oldHider.remove();
 
-        const style = document.createElement('style');
-        style.id = 'cursor-glide-styles';
-        const customColorProp = CONFIG.customColor ? `--cursor-custom-color: ${CONFIG.customColor};` : '';
-        style.textContent = `
-            :root {
-                ${customColorProp}
-            }
-
+        let style = document.getElementById('cursor-glide-styles');
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'cursor-glide-styles';
+            (document.head || document.documentElement).appendChild(style);
+        }
+        const customColorProp = activeConfig.customColor ? `--cursor-custom-color: ${activeConfig.customColor};` : '';
+        const hideCaretCss = activeConfig.hideNativeCaret ? `
             input:not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
             textarea,
             [contenteditable="true"],
@@ -155,15 +269,21 @@
             .kix-cursor {
                 opacity: 0 !important;
             }
+        ` : '';
 
+        style.textContent = `
+            :root {
+                ${customColorProp}
+            }
+            ${hideCaretCss}
             .active-cell-border {
                 transition: all 80ms ease-out !important;
             }
         `;
-        (document.head || document.documentElement).appendChild(style);
     }
 
     function hideNativeCaret(el) {
+        if (!activeConfig.hideNativeCaret) return;
         if (!el || !el.style) return;
         el.style.setProperty('caret-color', 'transparent', 'important');
         const root = el.getRootNode();
@@ -205,7 +325,6 @@
                 display: block !important;
             `;
             ctx = canvas.getContext('2d');
-            window.addEventListener('resize', resizeCanvas, { passive: true });
         }
         ensureCanvas();
     }
@@ -314,7 +433,7 @@
         return {
             x: Math.max(elRect.left, Math.min(elRect.right, x)),
             y: Math.max(elRect.top, Math.min(elRect.bottom, y)),
-            w: CONFIG.cursorWidth,
+            w: activeConfig.cursorWidth,
             h: Math.min(elRect.height, cachedLineHeight)
         };
     }
@@ -330,7 +449,7 @@
             return {
                 x: rect.left,
                 y: rect.top,
-                w: CONFIG.cursorWidth,
+                w: activeConfig.cursorWidth,
                 h: rect.height || 18
             };
         }
@@ -347,7 +466,7 @@
                     return {
                         x: bRect.left,
                         y: bRect.top,
-                        w: CONFIG.cursorWidth,
+                        w: activeConfig.cursorWidth,
                         h: bRect.height
                     };
                 }
@@ -359,7 +478,7 @@
             return {
                 x: cRect.left + (parseFloat(cStyle.paddingLeft) || 0),
                 y: cRect.top + (parseFloat(cStyle.paddingTop) || 0),
-                w: CONFIG.cursorWidth,
+                w: activeConfig.cursorWidth,
                 h: Math.min(cRect.height || lh, lh)
             };
         }
@@ -375,7 +494,7 @@
                 return {
                     x: dRect.left,
                     y: dRect.top,
-                    w: Math.max(dRect.width, CONFIG.cursorWidth),
+                    w: Math.max(dRect.width, activeConfig.cursorWidth),
                     h: dRect.height
                 };
             }
@@ -388,7 +507,7 @@
                 return {
                     x: mRect.left,
                     y: mRect.top,
-                    w: Math.max(mRect.width, CONFIG.cursorWidth),
+                    w: Math.max(mRect.width, activeConfig.cursorWidth),
                     h: mRect.height
                 };
             }
@@ -401,7 +520,7 @@
                 return {
                     x: cmRect.left,
                     y: cmRect.top,
-                    w: Math.max(cmRect.width, CONFIG.cursorWidth),
+                    w: Math.max(cmRect.width, activeConfig.cursorWidth),
                     h: cmRect.height
                 };
             }
@@ -414,7 +533,7 @@
                 return {
                     x: aRect.left,
                     y: aRect.top,
-                    w: Math.max(aRect.width, CONFIG.cursorWidth),
+                    w: Math.max(aRect.width, activeConfig.cursorWidth),
                     h: aRect.height
                 };
             }
@@ -426,7 +545,7 @@
             return {
                 x: fRect.left,
                 y: fRect.top,
-                w: CONFIG.cursorWidth,
+                w: activeConfig.cursorWidth,
                 h: fRect.height
             };
         }
@@ -448,8 +567,8 @@
     }
 
     function detectCursorColor(el) {
-        if (CONFIG.customColor) return CONFIG.customColor;
-        if (!el) return `rgba(255, 255, 255, ${CONFIG.bgOpacity})`;
+        if (activeConfig.customColor) return activeConfig.customColor;
+        if (!el) return `rgba(255, 255, 255, ${activeConfig.bgOpacity})`;
 
         try {
             const style = window.getComputedStyle(el);
@@ -463,7 +582,7 @@
             }
             return 'rgb(255, 255, 255)';
         } catch {
-            return `rgba(255, 255, 255, ${CONFIG.bgOpacity})`;
+            return `rgba(255, 255, 255, ${activeConfig.bgOpacity})`;
         }
     }
 
@@ -501,7 +620,7 @@
         const dist = Math.hypot(dx, dy);
 
         if (dist > 0.5) {
-            if (dist > CONFIG.maxGlideDist) {
+            if (dist > activeConfig.maxGlideDist) {
                 prevRect = { ...target };
             } else {
                 prevRect = { ...curRect };
@@ -518,7 +637,7 @@
     }
 
     function drawCaretShape(leadX, leadY, trailX, trailY, w, h) {
-        const r = Math.min(CONFIG.cornerRadius, Math.min(w, h) * 0.5);
+        const r = Math.min(activeConfig.cornerRadius, Math.min(w, h) * 0.5);
         const dx = leadX - trailX;
         const dy = leadY - trailY;
 
@@ -570,7 +689,7 @@
             return;
         }
 
-        const elapsed = (now - animStartTime) / CONFIG.duration;
+        const elapsed = (now - animStartTime) / activeConfig.duration;
         const t = Math.min(Math.max(elapsed, 0.0), 1.0);
 
         const moveDx = curRect.cx - prevRect.cx;
@@ -586,7 +705,7 @@
             leadY = trailY = curRect.cy;
         } else {
             const tLead = easeLeading(t);
-            const tTrail = (1.0 - CONFIG.trailSmear) * tLead + CONFIG.trailSmear * easeTrailing(t);
+            const tTrail = (1.0 - activeConfig.trailSmear) * tLead + activeConfig.trailSmear * easeTrailing(t);
 
             leadX = prevRect.cx + moveDx * tLead;
             leadY = prevRect.cy + moveDy * tLead;
@@ -596,7 +715,7 @@
 
         ctx.save();
         ctx.fillStyle = cursorColor;
-        ctx.globalAlpha = CONFIG.bgOpacity;
+        ctx.globalAlpha = activeConfig.bgOpacity;
         drawCaretShape(leadX, leadY, trailX, trailY, curRect.w, curRect.h);
         ctx.restore();
 
@@ -614,42 +733,48 @@
         }
     }
 
-    let docsObserverAttached = false;
     function tryAttachDocsObserver(scheduleUpdate) {
         if (docsObserverAttached) return;
         const docsCursor = document.querySelector('.kix-cursor');
         if (docsCursor) {
             docsObserverAttached = true;
-            const obs = new MutationObserver(scheduleUpdate);
-            obs.observe(docsCursor, { attributes: true, attributeFilter: ['style', 'class'] });
+            docsObserver = new MutationObserver(scheduleUpdate);
+            docsObserver.observe(docsCursor, { attributes: true, attributeFilter: ['style', 'class'] });
         }
     }
 
     function setupListeners() {
+        if (glideAbortController) glideAbortController.abort();
+        glideAbortController = new AbortController();
+        const signal = glideAbortController.signal;
+
         let scheduled = false;
         const scheduleUpdate = () => {
+            if (!glideActive) return;
             if (scheduled) return;
             scheduled = true;
             requestAnimationFrame(() => {
                 scheduled = false;
+                if (!glideActive) return;
                 ensureCanvas();
                 tryAttachDocsObserver(scheduleUpdate);
                 updateCursorTarget();
             });
         };
 
-        document.addEventListener('selectionchange', scheduleUpdate, { passive: true });
-        document.addEventListener('input', scheduleUpdate, { passive: true });
-        document.addEventListener('keydown', scheduleUpdate, { passive: true, capture: true });
-        document.addEventListener('keyup', scheduleUpdate, { passive: true, capture: true });
-        document.addEventListener('click', scheduleUpdate, { passive: true, capture: true });
+        document.addEventListener('selectionchange', scheduleUpdate, { passive: true, signal });
+        document.addEventListener('input', scheduleUpdate, { passive: true, signal });
+        document.addEventListener('keydown', scheduleUpdate, { passive: true, capture: true, signal });
+        document.addEventListener('keyup', scheduleUpdate, { passive: true, capture: true, signal });
+        document.addEventListener('click', scheduleUpdate, { passive: true, capture: true, signal });
         document.addEventListener('focusin', () => {
             cachedStyleElement = null;
             scheduleUpdate();
-        }, { passive: true, capture: true });
+        }, { passive: true, capture: true, signal });
 
         document.addEventListener('focusout', () => {
             setTimeout(() => {
+                if (!glideActive) return;
                 const deep = getDeepActiveElement();
                 const docsCaret = document.querySelector('.kix-cursor-caret');
                 if ((!deep || deep === document.body) && !docsCaret) {
@@ -659,21 +784,301 @@
                     scheduleUpdate();
                 }
             }, 50);
-        }, { passive: true });
+        }, { passive: true, signal });
 
-        window.addEventListener('scroll', scheduleUpdate, { passive: true, capture: true });
+        window.addEventListener('scroll', scheduleUpdate, { passive: true, capture: true, signal });
+        window.addEventListener('resize', resizeCanvas, { passive: true, signal });
         tryAttachDocsObserver(scheduleUpdate);
     }
 
-    injectStyles();
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            initCanvas();
-            setupListeners();
-        });
-    } else {
+    function startGlide() {
+        if (glideActive) return;
+        if (isUrlExcluded() && !isSettingsPage) return;
+        glideActive = true;
+        injectStyles();
         initCanvas();
         setupListeners();
+    }
+
+    function stopGlide() {
+        if (!glideActive) return;
+        glideActive = false;
+        if (glideAbortController) {
+            glideAbortController.abort();
+            glideAbortController = null;
+        }
+        if (docsObserver) {
+            docsObserver.disconnect();
+            docsObserver = null;
+            docsObserverAttached = false;
+        }
+        const style = document.getElementById('cursor-glide-styles');
+        if (style) style.remove();
+        if (canvas) {
+            canvas.remove();
+            canvas = null;
+            ctx = null;
+        }
+        if (mirrorDiv) {
+            mirrorDiv.remove();
+            mirrorDiv = null;
+            mirrorMarker = null;
+        }
+        cachedStyleElement = null;
+        isAnimating = false;
+        isFocused = false;
+        prevRect = null;
+        curRect = null;
+    }
+
+    function handleConfigUpdate() {
+        updateMenu();
+        if (isUrlExcluded() && !isSettingsPage) {
+            stopGlide();
+        } else {
+            if (!glideActive) {
+                startGlide();
+            } else {
+                injectStyles();
+                updateCursorTarget();
+            }
+        }
+    }
+
+    function initSettingsPage() {
+        const badge = document.getElementById('conn-badge');
+        if (badge) {
+            badge.textContent = 'Connected (Violentmonkey active)';
+            badge.classList.add('connected');
+        }
+
+        const cfg = activeConfig;
+
+        const elEnabled = document.getElementById('cfg-enabled');
+        const elDuration = document.getElementById('cfg-duration');
+        const elDurationRange = document.getElementById('cfg-duration-range');
+        const elTrailSmear = document.getElementById('cfg-trail-smear');
+        const elTrailSmearRange = document.getElementById('cfg-trail-smear-range');
+        const elMaxDist = document.getElementById('cfg-max-dist');
+        const elMaxDistRange = document.getElementById('cfg-max-dist-range');
+        const elCursorWidth = document.getElementById('cfg-cursor-width');
+        const elCursorWidthRange = document.getElementById('cfg-cursor-width-range');
+        const elCornerRadius = document.getElementById('cfg-corner-radius');
+        const elCornerRadiusRange = document.getElementById('cfg-corner-radius-range');
+        const elBgOpacity = document.getElementById('cfg-bg-opacity');
+        const elBgOpacityRange = document.getElementById('cfg-bg-opacity-range');
+        const elCustomColor = document.getElementById('cfg-custom-color');
+        const elCustomColorPicker = document.getElementById('cfg-custom-color-picker');
+        const elHideNative = document.getElementById('cfg-hide-native');
+
+        function populateForm(c) {
+            if (elEnabled) elEnabled.checked = c.enabled;
+            if (elDuration) elDuration.value = c.duration;
+            if (elDurationRange) elDurationRange.value = c.duration;
+            if (elTrailSmear) elTrailSmear.value = c.trailSmear;
+            if (elTrailSmearRange) elTrailSmearRange.value = c.trailSmear;
+            if (elMaxDist) elMaxDist.value = c.maxGlideDist;
+            if (elMaxDistRange) elMaxDistRange.value = c.maxGlideDist;
+            if (elCursorWidth) elCursorWidth.value = c.cursorWidth;
+            if (elCursorWidthRange) elCursorWidthRange.value = c.cursorWidth;
+            if (elCornerRadius) elCornerRadius.value = c.cornerRadius;
+            if (elCornerRadiusRange) elCornerRadiusRange.value = c.cornerRadius;
+            if (elBgOpacity) elBgOpacity.value = c.bgOpacity;
+            if (elBgOpacityRange) elBgOpacityRange.value = c.bgOpacity;
+            if (elCustomColor) elCustomColor.value = c.customColor || '';
+            if (elCustomColorPicker && /^#[0-9a-fA-F]{6}$/.test(c.customColor)) {
+                elCustomColorPicker.value = c.customColor;
+            }
+            if (elHideNative) elHideNative.checked = c.hideNativeCaret;
+
+            renderExclusionsTable(c.exclusions);
+            updateRawJson(c);
+        }
+
+        populateForm(cfg);
+
+        const btnAdd = document.getElementById('btn-add-exclusion');
+        const inputNew = document.getElementById('new-exclusion-pattern');
+        if (btnAdd && inputNew) {
+            btnAdd.onclick = () => {
+                const val = inputNew.value.trim();
+                if (!val) return;
+                cfg.exclusions.push({ pattern: val });
+                inputNew.value = '';
+                renderExclusionsTable(cfg.exclusions);
+                updateRawJson(cfg);
+            };
+            inputNew.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    btnAdd.click();
+                }
+            });
+        }
+
+        const btnSave = document.getElementById('btn-save');
+        if (btnSave) {
+            btnSave.onclick = () => {
+                collectFormSettings(cfg);
+                saveConfig(cfg);
+                injectStyles();
+                updateRawJson(cfg);
+                if (window.GlideSettingsUI?.showToast) {
+                    window.GlideSettingsUI.showToast('Settings saved to Violentmonkey');
+                }
+            };
+        }
+
+        const btnReset = document.getElementById('btn-reset');
+        if (btnReset) {
+            btnReset.onclick = () => {
+                if (!confirm('Reset all Cursor Glide settings to defaults?')) return;
+                const fresh = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+                saveConfig(fresh);
+                location.reload();
+            };
+        }
+
+        const btnExport = document.getElementById('btn-export');
+        if (btnExport) {
+            btnExport.onclick = () => {
+                collectFormSettings(cfg);
+                const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(cfg, null, 2));
+                const dl = document.createElement('a');
+                dl.setAttribute('href', dataStr);
+                dl.setAttribute('download', 'cursor-glide-config.json');
+                dl.click();
+            };
+        }
+
+        const btnCopyJson = document.getElementById('btn-copy-json');
+        if (btnCopyJson) {
+            btnCopyJson.onclick = () => {
+                const json = document.getElementById('raw-json-editor')?.value || '';
+                navigator.clipboard.writeText(json).then(() => {
+                    if (window.GlideSettingsUI?.showToast) {
+                        window.GlideSettingsUI.showToast('JSON copied to clipboard');
+                    }
+                });
+            };
+        }
+
+        const btnApplyJson = document.getElementById('btn-apply-json');
+        if (btnApplyJson) {
+            btnApplyJson.onclick = () => {
+                try {
+                    const raw = document.getElementById('raw-json-editor')?.value || '';
+                    const parsed = JSON.parse(raw);
+                    saveConfig(parsed);
+                    populateForm(parsed);
+                    injectStyles();
+                    if (window.GlideSettingsUI?.showToast) {
+                        window.GlideSettingsUI.showToast('Config validated & applied');
+                    }
+                } catch (err) {
+                    alert('Invalid JSON: ' + err.message);
+                }
+            };
+        }
+    }
+
+    function renderExclusionsTable(exclusions) {
+        const tbody = document.getElementById('exclusions-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!exclusions || exclusions.length === 0) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td colspan="2" style="text-align: center; color: var(--fg-muted); padding: 16px;">No exclusions added. Cursor glide runs on all websites by default.</td>`;
+            tbody.appendChild(tr);
+            return;
+        }
+
+        exclusions.forEach((rule, idx) => {
+            const tr = document.createElement('tr');
+
+            const tdPat = document.createElement('td');
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'table-input';
+            input.value = typeof rule === 'string' ? rule : rule.pattern || '';
+            input.placeholder = 'e.g. mail.google.com';
+            input.oninput = () => {
+                if (typeof rule === 'string') {
+                    exclusions[idx] = { pattern: input.value.trim() };
+                } else {
+                    rule.pattern = input.value.trim();
+                }
+                updateRawJson(activeConfig);
+            };
+            tdPat.appendChild(input);
+            tr.appendChild(tdPat);
+
+            const tdAct = document.createElement('td');
+            tdAct.style.textAlign = 'right';
+            const delBtn = document.createElement('button');
+            delBtn.className = 'danger';
+            delBtn.textContent = 'Remove';
+            delBtn.onclick = () => {
+                exclusions.splice(idx, 1);
+                renderExclusionsTable(exclusions);
+                updateRawJson(activeConfig);
+            };
+            tdAct.appendChild(delBtn);
+            tr.appendChild(tdAct);
+
+            tbody.appendChild(tr);
+        });
+    }
+
+    function collectFormSettings(cfg) {
+        const elEnabled = document.getElementById('cfg-enabled');
+        const elDuration = document.getElementById('cfg-duration');
+        const elTrailSmear = document.getElementById('cfg-trail-smear');
+        const elMaxDist = document.getElementById('cfg-max-dist');
+        const elCursorWidth = document.getElementById('cfg-cursor-width');
+        const elCornerRadius = document.getElementById('cfg-corner-radius');
+        const elBgOpacity = document.getElementById('cfg-bg-opacity');
+        const elCustomColor = document.getElementById('cfg-custom-color');
+        const elHideNative = document.getElementById('cfg-hide-native');
+
+        if (elEnabled) cfg.enabled = elEnabled.checked;
+        if (elDuration) cfg.duration = parseInt(elDuration.value, 10) || 150;
+        if (elTrailSmear) cfg.trailSmear = parseFloat(elTrailSmear.value) || 0.85;
+        if (elMaxDist) cfg.maxGlideDist = parseInt(elMaxDist.value, 10) || 350;
+        if (elCursorWidth) cfg.cursorWidth = parseFloat(elCursorWidth.value) || 2.5;
+        if (elCornerRadius) cfg.cornerRadius = parseFloat(elCornerRadius.value) || 3.0;
+        if (elBgOpacity) cfg.bgOpacity = parseFloat(elBgOpacity.value) || 0.85;
+        if (elCustomColor) cfg.customColor = elCustomColor.value.trim();
+        if (elHideNative) cfg.hideNativeCaret = elHideNative.checked;
+    }
+
+    function updateRawJson(cfg) {
+        const el = document.getElementById('raw-json-editor');
+        if (el) el.value = JSON.stringify(cfg, null, 2);
+    }
+
+    const isSettingsPage = location.hostname === 'cursor.lan' || location.pathname.endsWith('/cursor.html');
+
+    if (isSettingsPage) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                initSettingsPage();
+                startGlide();
+            });
+        } else {
+            initSettingsPage();
+            startGlide();
+        }
+        return;
+    }
+
+    updateMenu();
+
+    if (!isUrlExcluded()) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startGlide);
+        } else {
+            startGlide();
+        }
     }
 })();
