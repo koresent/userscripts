@@ -207,6 +207,7 @@
     `;
 
     let scanRafId = null;
+    let scanTimeoutId = null;
     let scanIntervalId = null;
     let observer = null;
     let hooked = false;
@@ -341,16 +342,31 @@
       avatars.forEach(updateAvatar);
     }
 
+    function getObservedRoot() {
+      return (
+        document.querySelector('.chatlist-parts') ||
+        document.getElementById('chatlist-container') ||
+        document.querySelector('.chatlist') ||
+        document.getElementById('main-columns') ||
+        document.body
+      );
+    }
+
     function scheduleScan() {
-      if (!isRunning || scanRafId) return;
-      scanRafId = requestAnimationFrame(() => {
-        scanRafId = null;
+      if (!isRunning || scanTimeoutId) return;
+      scanTimeoutId = setTimeout(() => {
+        scanTimeoutId = null;
         if (!isRunning) return;
-        const avatars = document.querySelectorAll(
-          '.avatar[data-peer-id]:not([data-peer-id^="-"]), .dialog-avatar[data-peer-id]:not([data-peer-id^="-"])'
-        );
-        avatars.forEach(updateAvatar);
-      });
+        scanRafId = requestAnimationFrame(() => {
+          scanRafId = null;
+          if (!isRunning) return;
+          const root = getObservedRoot();
+          const avatars = (root || document).querySelectorAll(
+            '.avatar[data-peer-id]:not([data-peer-id^="-"]), .dialog-avatar[data-peer-id]:not([data-peer-id^="-"])'
+          );
+          avatars.forEach(updateAvatar);
+        });
+      }, 120);
     }
 
     function hookTweb() {
@@ -373,11 +389,11 @@
         let shouldScan = false;
         for (let i = 0; i < mutations.length; i++) {
           const mutation = mutations[i];
-          if (mutation.addedNodes.length > 0) {
-            shouldScan = true;
-            break;
-          }
-          if (
+          if (mutation.type === 'childList') {
+            if (mutation.addedNodes.length > 0) {
+              shouldScan = true;
+            }
+          } else if (
             mutation.type === 'attributes' &&
             mutation.attributeName === 'class'
           ) {
@@ -388,12 +404,15 @@
             if (target.classList?.contains('dialog-avatar')) {
               continue;
             }
-            if (
-              target.classList?.contains('avatar') ||
-              target.classList?.contains('chatlist-chat')
-            ) {
-              shouldScan = true;
-              break;
+            if (target.classList?.contains('avatar')) {
+              updateAvatar(target);
+            } else if (target.classList?.contains('chatlist-chat')) {
+              const av = target.querySelector('.avatar[data-peer-id], .dialog-avatar[data-peer-id]');
+              if (av) {
+                updateAvatar(av);
+              } else {
+                shouldScan = true;
+              }
             }
           }
         }
@@ -402,7 +421,7 @@
         }
       });
 
-      const root = document.getElementById('main-columns') || document.body;
+      const root = getObservedRoot();
       if (root) {
         observer.observe(root, {
           childList: true,
@@ -423,7 +442,7 @@
       hookTweb();
       startObserver();
       if (!scanIntervalId) {
-        scanIntervalId = setInterval(scheduleScan, 15000);
+        scanIntervalId = setInterval(scheduleScan, 30000);
       }
       scheduleScan();
     }
@@ -440,6 +459,10 @@
       if (scanIntervalId) {
         clearInterval(scanIntervalId);
         scanIntervalId = null;
+      }
+      if (scanTimeoutId) {
+        clearTimeout(scanTimeoutId);
+        scanTimeoutId = null;
       }
       if (scanRafId) {
         cancelAnimationFrame(scanRafId);

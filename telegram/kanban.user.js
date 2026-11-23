@@ -3033,6 +3033,7 @@
 
   function activateKanbanView() {
     state.isKanbanActive = true;
+    ensureOutboxProcessor();
     const mainCols = document.getElementById('main-columns');
     if (mainCols) {
       mainCols.classList.remove('is-wishlist');
@@ -3915,6 +3916,8 @@
         return;
       }
 
+      if (!state.isKanbanActive) return;
+
       if (detail?.peerId === state.peerId) {
         const msg = win.apiManagerProxy?.getMessageByPeer(state.peerId, detail.mid);
         if (!msg) return;
@@ -3954,6 +3957,7 @@
     });
 
     rootScope.addEventListener('message_sent', (e) => {
+      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
         const msg = detail.message;
@@ -3982,6 +3986,7 @@
     });
 
     rootScope.addEventListener('history_append', (e) => {
+      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.message?.peerId === state.peerId) {
         const msg = detail.message;
@@ -4005,6 +4010,7 @@
     });
 
     rootScope.addEventListener('history_delete', (e) => {
+      if (!state.isKanbanActive) return;
       const detail = e.detail || e;
       if (detail?.peerId === state.peerId && Array.isArray(detail.msgs)) {
         let changed = false;
@@ -4023,6 +4029,7 @@
 
   function setupGlobalChecklistListener() {
     document.addEventListener('click', (e) => {
+      if (!state.isKanbanActive) return;
       const checkbox = e.target.closest('.kanban-checklist-checkbox, .kanban-row-checkbox');
       if (!checkbox) return;
       if (checkbox.closest('#kanban-live-editor')) return;
@@ -4075,22 +4082,40 @@
     });
   }
 
+  let outboxInterval = null;
+  function ensureOutboxProcessor() {
+    if (outboxInterval) return;
+    outboxInterval = setInterval(() => {
+      if (state.isKanbanActive && !state.isProcessingOutbox && state.outbox.length > 0) {
+        api.processOutbox();
+      } else if (!state.isKanbanActive && state.outbox.length === 0) {
+        clearInterval(outboxInterval);
+        outboxInterval = null;
+      }
+    }, 5000);
+  }
+
+  function observeSidebarForRemount() {
+    const scrollable = document.querySelector('#folders-sidebar .folders-sidebar__scrollable');
+    if (!scrollable) return;
+    const obs = new MutationObserver(() => {
+      if (!document.getElementById('folders-sidebar-kanban-group')) {
+        renderSidebarTabs();
+      }
+    });
+    obs.observe(scrollable, { childList: true });
+  }
+
   function init() {
     injectStyles();
     setupGlobalChecklistListener();
-
-    setInterval(() => {
-      if (state.isKanbanActive && !state.isProcessingOutbox && state.outbox.length > 0) {
-        api.processOutbox();
-      }
-    }, 5000);
 
     window.addEventListener('online', () => {
       api.processOutbox();
     });
 
     let isRegistryLoaded = false;
-    const interval = setInterval(() => {
+    let sidebarPollInterval = setInterval(() => {
       if (win.rootScope?.managers?.appMessagesManager && win.apiManagerProxy) {
         const currentMyId = win.rootScope?.myId || win.rootScope?.managers?.appUsersManager?.getSelf()?.id;
         if (currentMyId && state.myId && currentMyId !== state.myId) {
@@ -4111,6 +4136,13 @@
           setupRealtimeListeners();
         }
         renderSidebarTabs();
+
+        const group = document.getElementById('folders-sidebar-kanban-group');
+        if (group && isRegistryLoaded) {
+          clearInterval(sidebarPollInterval);
+          sidebarPollInterval = null;
+          observeSidebarForRemount();
+        }
       }
     }, 1000);
   }

@@ -33,6 +33,7 @@
 
     const STORAGE_KEY = 'cursor_glide_config';
     const SETTINGS_URL = 'https://cursor.lan';
+    const isTelegram = location.hostname === 'web.telegram.org' || location.hostname.endsWith('.telegram.org');
 
     const DEFAULT_CONFIG = {
         version: 1,
@@ -487,6 +488,19 @@
     }
 
     function findTargetCaretRect() {
+        if (isTelegram) {
+            const el = getDeepActiveElement();
+            if (!el || el === document.body) return null;
+            hideNativeCaret(el);
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                return measureInputCaret(el);
+            }
+            if (el.isContentEditable || el.getAttribute('role') === 'textbox' || el.classList.contains('input-message-input')) {
+                return measureContentEditableCaret();
+            }
+            return null;
+        }
+
         const docsCaret = document.querySelector('.kix-cursor-caret');
         if (docsCaret) {
             const dRect = docsCaret.getBoundingClientRect();
@@ -734,7 +748,7 @@
     }
 
     function tryAttachDocsObserver(scheduleUpdate) {
-        if (docsObserverAttached) return;
+        if (isTelegram || docsObserverAttached) return;
         const docsCursor = document.querySelector('.kix-cursor');
         if (docsCursor) {
             docsObserverAttached = true;
@@ -762,7 +776,10 @@
             });
         };
 
-        document.addEventListener('selectionchange', scheduleUpdate, { passive: true, signal });
+        document.addEventListener('selectionchange', () => {
+            if (isTelegram && !isFocused) return;
+            scheduleUpdate();
+        }, { passive: true, signal });
         document.addEventListener('input', scheduleUpdate, { passive: true, signal });
         document.addEventListener('keydown', scheduleUpdate, { passive: true, capture: true, signal });
         document.addEventListener('keyup', scheduleUpdate, { passive: true, capture: true, signal });
@@ -776,7 +793,7 @@
             setTimeout(() => {
                 if (!glideActive) return;
                 const deep = getDeepActiveElement();
-                const docsCaret = document.querySelector('.kix-cursor-caret');
+                const docsCaret = !isTelegram && document.querySelector('.kix-cursor-caret');
                 if ((!deep || deep === document.body) && !docsCaret) {
                     isFocused = false;
                     clearCanvas();
@@ -786,7 +803,15 @@
             }, 50);
         }, { passive: true, signal });
 
-        window.addEventListener('scroll', scheduleUpdate, { passive: true, capture: true, signal });
+        const handleScroll = (e) => {
+            if (isTelegram) {
+                if (!isFocused || !activeElement) return;
+                if (e.target !== activeElement && !activeElement.contains(e.target)) return;
+            }
+            scheduleUpdate();
+        };
+
+        window.addEventListener('scroll', handleScroll, { passive: true, capture: true, signal });
         window.addEventListener('resize', resizeCanvas, { passive: true, signal });
         tryAttachDocsObserver(scheduleUpdate);
     }
