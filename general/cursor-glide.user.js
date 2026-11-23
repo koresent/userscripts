@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [General] Cursor Glide
 // @namespace      github.com/koresent/userscripts
-// @version        1.4.0
+// @version        1.4.1
 // @description    Smooth smear caret animation for web editors and text inputs
 // @author         Koresent
 // @license        GPL-3.0
@@ -33,7 +33,23 @@
 
     const STORAGE_KEY = 'cursor_glide_config';
     const SETTINGS_URL = 'https://cursor.lan';
-    const isTelegram = location.hostname === 'web.telegram.org' || location.hostname.endsWith('.telegram.org');
+
+    const HOST = (location.hostname || '').toLowerCase();
+    const PATH = (location.pathname || '').toLowerCase();
+
+    const IS_DOCS = HOST === 'docs.google.com' && PATH.includes('/document/');
+    const IS_SHEETS = HOST === 'docs.google.com' && PATH.includes('/spreadsheets/');
+    const IS_TELEGRAM = HOST === 'web.telegram.org' || HOST.endsWith('.telegram.org');
+    const IS_CODE_EDITOR_SITE = (
+        HOST.includes('github') ||
+        HOST.includes('vscode') ||
+        HOST.includes('stackblitz') ||
+        HOST.includes('leetcode') ||
+        HOST.includes('gitlab') ||
+        HOST.includes('codeberg') ||
+        HOST.includes('codepen') ||
+        HOST.includes('jsfiddle')
+    );
 
     const DEFAULT_CONFIG = {
         version: 1,
@@ -488,9 +504,9 @@
     }
 
     function findTargetCaretRect() {
-        if (isTelegram) {
-            const el = getDeepActiveElement();
-            if (!el || el === document.body) return null;
+        // Fast-path: Standard inputs and contenteditable (covers 99% of web interactions)
+        const el = getDeepActiveElement();
+        if (el && el !== document.body) {
             hideNativeCaret(el);
             if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
                 return measureInputCaret(el);
@@ -498,83 +514,80 @@
             if (el.isContentEditable || el.getAttribute('role') === 'textbox' || el.classList.contains('input-message-input')) {
                 return measureContentEditableCaret();
             }
+        }
+
+        // Dedicated Google Docs caret
+        if (IS_DOCS) {
+            const docsCaret = document.querySelector('.kix-cursor-caret');
+            if (docsCaret) {
+                const dRect = docsCaret.getBoundingClientRect();
+                if (dRect.height > 0 && dRect.top > 0) {
+                    return {
+                        x: dRect.left,
+                        y: dRect.top,
+                        w: Math.max(dRect.width, activeConfig.cursorWidth),
+                        h: dRect.height
+                    };
+                }
+            }
             return null;
         }
 
-        const docsCaret = document.querySelector('.kix-cursor-caret');
-        if (docsCaret) {
-            const dRect = docsCaret.getBoundingClientRect();
-            if (dRect.height > 0 && dRect.top > 0) {
+        // Dedicated Google Sheets formula input
+        if (IS_SHEETS) {
+            const formulaInput = document.querySelector('.cell-input, #t-formula-bar-input');
+            if (formulaInput && (document.activeElement === formulaInput || formulaInput.contains(document.activeElement))) {
+                const fRect = formulaInput.getBoundingClientRect();
                 return {
-                    x: dRect.left,
-                    y: dRect.top,
-                    w: Math.max(dRect.width, activeConfig.cursorWidth),
-                    h: dRect.height
+                    x: fRect.left,
+                    y: fRect.top,
+                    w: activeConfig.cursorWidth,
+                    h: fRect.height
                 };
             }
+            return null;
         }
 
-        const monacoCursor = document.querySelector('.monaco-editor.focused .cursors-layer .cursor, .monaco-editor .cursors-layer .cursor');
-        if (monacoCursor) {
-            const mRect = monacoCursor.getBoundingClientRect();
-            if (mRect.width > 0 || mRect.height > 0) {
-                return {
-                    x: mRect.left,
-                    y: mRect.top,
-                    w: Math.max(mRect.width, activeConfig.cursorWidth),
-                    h: mRect.height
-                };
+        // Web code editors (Monaco, CodeMirror, Ace) — strictly scoped to coding domains
+        if (IS_CODE_EDITOR_SITE) {
+            const monacoCursor = document.querySelector('.monaco-editor.focused .cursors-layer .cursor, .monaco-editor .cursors-layer .cursor');
+            if (monacoCursor) {
+                const mRect = monacoCursor.getBoundingClientRect();
+                if (mRect.width > 0 || mRect.height > 0) {
+                    return {
+                        x: mRect.left,
+                        y: mRect.top,
+                        w: Math.max(mRect.width, activeConfig.cursorWidth),
+                        h: mRect.height
+                    };
+                }
             }
-        }
 
-        const cmCursor = document.querySelector('.CodeMirror-focused .CodeMirror-cursor, .CodeMirror .CodeMirror-cursor, .cm-focused .cm-cursorLayer .cm-cursor');
-        if (cmCursor) {
-            const cmRect = cmCursor.getBoundingClientRect();
-            if (cmRect.height > 0 && cmRect.top > 0) {
-                return {
-                    x: cmRect.left,
-                    y: cmRect.top,
-                    w: Math.max(cmRect.width, activeConfig.cursorWidth),
-                    h: cmRect.height
-                };
+            const cmCursor = document.querySelector('.CodeMirror-focused .CodeMirror-cursor, .CodeMirror .CodeMirror-cursor, .cm-focused .cm-cursorLayer .cm-cursor');
+            if (cmCursor) {
+                const cmRect = cmCursor.getBoundingClientRect();
+                if (cmRect.height > 0 && cmRect.top > 0) {
+                    return {
+                        x: cmRect.left,
+                        y: cmRect.top,
+                        w: Math.max(cmRect.width, activeConfig.cursorWidth),
+                        h: cmRect.height
+                    };
+                }
             }
-        }
 
-        const aceCursor = document.querySelector('.ace_editor.ace_focus .ace_cursor, .ace_editor .ace_cursor');
-        if (aceCursor) {
-            const aRect = aceCursor.getBoundingClientRect();
-            if (aRect.height > 0 && aRect.top > 0) {
-                return {
-                    x: aRect.left,
-                    y: aRect.top,
-                    w: Math.max(aRect.width, activeConfig.cursorWidth),
-                    h: aRect.height
-                };
+            const aceCursor = document.querySelector('.ace_editor.ace_focus .ace_cursor, .ace_editor .ace_cursor');
+            if (aceCursor) {
+                const aRect = aceCursor.getBoundingClientRect();
+                if (aRect.height > 0 && aRect.top > 0) {
+                    return {
+                        x: aRect.left,
+                        y: aRect.top,
+                        w: Math.max(aRect.width, activeConfig.cursorWidth),
+                        h: aRect.height
+                    };
+                }
             }
-        }
-
-        const formulaInput = document.querySelector('.cell-input, #t-formula-bar-input');
-        if (formulaInput && (document.activeElement === formulaInput || formulaInput.contains(document.activeElement))) {
-            const fRect = formulaInput.getBoundingClientRect();
-            return {
-                x: fRect.left,
-                y: fRect.top,
-                w: activeConfig.cursorWidth,
-                h: fRect.height
-            };
-        }
-
-        const el = getDeepActiveElement();
-        if (!el) return null;
-
-        hideNativeCaret(el);
-
-        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-            return measureInputCaret(el);
-        }
-
-        if (el.isContentEditable || el.getAttribute('role') === 'textbox' || el.classList.contains('cm-content')) {
-            return measureContentEditableCaret();
         }
 
         return null;
@@ -748,7 +761,7 @@
     }
 
     function tryAttachDocsObserver(scheduleUpdate) {
-        if (isTelegram || docsObserverAttached) return;
+        if (!IS_DOCS || docsObserverAttached) return;
         const docsCursor = document.querySelector('.kix-cursor');
         if (docsCursor) {
             docsObserverAttached = true;
@@ -777,7 +790,7 @@
         };
 
         document.addEventListener('selectionchange', () => {
-            if (isTelegram && !isFocused) return;
+            if (!IS_DOCS && !isFocused) return;
             scheduleUpdate();
         }, { passive: true, signal });
         document.addEventListener('input', scheduleUpdate, { passive: true, signal });
@@ -793,7 +806,7 @@
             setTimeout(() => {
                 if (!glideActive) return;
                 const deep = getDeepActiveElement();
-                const docsCaret = !isTelegram && document.querySelector('.kix-cursor-caret');
+                const docsCaret = IS_DOCS && document.querySelector('.kix-cursor-caret');
                 if ((!deep || deep === document.body) && !docsCaret) {
                     isFocused = false;
                     clearCanvas();
@@ -804,9 +817,11 @@
         }, { passive: true, signal });
 
         const handleScroll = (e) => {
-            if (isTelegram) {
+            if (IS_TELEGRAM) {
                 if (!isFocused || !activeElement) return;
                 if (e.target !== activeElement && !activeElement.contains(e.target)) return;
+            } else if (!IS_DOCS && !IS_CODE_EDITOR_SITE) {
+                if (!isFocused || !activeElement) return;
             }
             scheduleUpdate();
         };
