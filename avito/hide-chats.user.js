@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           ⚙ [Avito] Hide & Filter Chats
 // @namespace      github.com/koresent/userscripts
-// @version        1.0.0
+// @version        1.0.1
 // @description    Hide unwanted Avito chats and filter hidden chats with a single click
 // @author         Koresent
 // @license        GPL-3.0
@@ -148,7 +148,21 @@
         transition: opacity 0.15s ease, background 0.15s ease, transform 0.15s ease;
         flex-shrink: 0;
         position: relative;
-        z-index: 2;
+        z-index: 10;
+        pointer-events: auto;
+      }
+
+      .avito-chat-action-btn.avito-chat-action-btn-fallback {
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        margin-left: 0;
+      }
+
+      .avito-chat-action-btn svg,
+      .avito-chat-action-btn svg * {
+        pointer-events: none !important;
       }
 
       a[data-marker="channels/channelLink"]:hover .avito-chat-action-btn,
@@ -156,6 +170,10 @@
         opacity: 1;
         background: rgba(128, 128, 128, 0.25);
         transform: scale(1.08);
+      }
+
+      .avito-chat-action-btn.avito-chat-action-btn-fallback:hover {
+        transform: translateY(-50%) scale(1.08);
       }
 
       .avito-chat-action-btn.avito-restore-btn {
@@ -177,6 +195,14 @@
         user-select: none;
         margin-left: 2px;
         flex-shrink: 0;
+        position: relative;
+        z-index: 5;
+      }
+
+      .avito-hidden-filter-pill svg,
+      .avito-hidden-filter-pill svg *,
+      .avito-hidden-filter-pill span {
+        pointer-events: none !important;
       }
 
       .avito-hidden-filter-pill input {
@@ -267,13 +293,14 @@
     if (!pill) return;
 
     const countEl = pill.querySelector('.avito-filter-pill-count');
-    if (countEl) {
-      countEl.textContent = String(Object.keys(State.hiddenChats).length);
+    const newCount = String(Object.keys(State.hiddenChats).length);
+    if (countEl && countEl.textContent !== newCount) {
+      countEl.textContent = newCount;
     }
 
-    if (State.showOnlyHidden) {
+    if (State.showOnlyHidden && !pill.classList.contains('is-active')) {
       pill.classList.add('is-active');
-    } else {
+    } else if (!State.showOnlyHidden && pill.classList.contains('is-active')) {
       pill.classList.remove('is-active');
     }
   }
@@ -298,13 +325,23 @@
         </span>
       `;
 
-      pill.addEventListener('click', (e) => {
+      const stopCapture = (e) => {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
+      };
+
+      pill.addEventListener('pointerdown', stopCapture, true);
+      pill.addEventListener('mousedown', stopCapture, true);
+      pill.addEventListener('pointerup', stopCapture, true);
+      pill.addEventListener('mouseup', stopCapture, true);
+
+      pill.addEventListener('click', (e) => {
+        stopCapture(e);
         State.showOnlyHidden = !State.showOnlyHidden;
         updateFilterPillCount();
         applyChatVisibility();
-      });
+      }, true);
 
       filtersContainer.appendChild(pill);
     } else {
@@ -317,22 +354,36 @@
     if (!chatId) return;
 
     const hidden = isChatHidden(chatId);
-    let asideBottom = linkEl.querySelector('[class*="asideBottom"]');
-    if (!asideBottom) {
-      asideBottom = linkEl.querySelector('[class*="aside"]');
+    let container = linkEl.querySelector('[class*="asideBottom"]');
+    let isFallback = false;
+
+    if (!container) {
+      container = linkEl.querySelector('[class*="aside"]');
     }
-    if (!asideBottom) return;
+    if (!container) {
+      container = linkEl.querySelector('[data-marker="channels/channel"]') || linkEl;
+      isFallback = true;
+    }
 
     let btn = linkEl.querySelector('.avito-chat-action-btn');
     if (!btn) {
       btn = document.createElement('button');
-      btn.className = 'avito-chat-action-btn';
+      btn.className = 'avito-chat-action-btn' + (isFallback ? ' avito-chat-action-btn-fallback' : '');
       btn.type = 'button';
 
-      btn.addEventListener('click', (e) => {
+      const stopCapture = (e) => {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
+      };
 
+      btn.addEventListener('pointerdown', stopCapture, true);
+      btn.addEventListener('mousedown', stopCapture, true);
+      btn.addEventListener('pointerup', stopCapture, true);
+      btn.addEventListener('mouseup', stopCapture, true);
+
+      btn.addEventListener('click', (e) => {
+        stopCapture(e);
         const currentHidden = isChatHidden(chatId);
         if (currentHidden) {
           unhideChat(chatId);
@@ -340,19 +391,23 @@
           const info = extractChatInfo(linkEl);
           hideChat(chatId, info);
         }
-      });
+      }, true);
 
-      asideBottom.appendChild(btn);
+      container.appendChild(btn);
     }
 
-    if (hidden) {
-      btn.className = 'avito-chat-action-btn avito-restore-btn';
-      btn.title = 'Вернуть чат в общий список';
-      btn.innerHTML = ICONS.undo;
-    } else {
-      btn.className = 'avito-chat-action-btn';
-      btn.title = 'Скрыть этот чат';
-      btn.innerHTML = ICONS.eyeOff;
+    const targetState = hidden ? 'restore' : 'hide';
+    if (btn.dataset.state !== targetState) {
+      btn.dataset.state = targetState;
+      if (hidden) {
+        btn.className = 'avito-chat-action-btn avito-restore-btn' + (isFallback ? ' avito-chat-action-btn-fallback' : '');
+        btn.title = 'Вернуть чат в общий список';
+        btn.innerHTML = ICONS.undo;
+      } else {
+        btn.className = 'avito-chat-action-btn' + (isFallback ? ' avito-chat-action-btn-fallback' : '');
+        btn.title = 'Скрыть этот чат';
+        btn.innerHTML = ICONS.eyeOff;
+      }
     }
   }
 
@@ -367,18 +422,20 @@
       const hidden = isChatHidden(chatId);
       ensureChatButton(linkEl);
 
+      const isHiddenClass = linkEl.classList.contains('avito-chat-is-hidden');
+
       if (State.showOnlyHidden) {
         if (hidden) {
-          linkEl.classList.remove('avito-chat-is-hidden');
+          if (isHiddenClass) linkEl.classList.remove('avito-chat-is-hidden');
           visibleCount++;
         } else {
-          linkEl.classList.add('avito-chat-is-hidden');
+          if (!isHiddenClass) linkEl.classList.add('avito-chat-is-hidden');
         }
       } else {
         if (hidden) {
-          linkEl.classList.add('avito-chat-is-hidden');
+          if (!isHiddenClass) linkEl.classList.add('avito-chat-is-hidden');
         } else {
-          linkEl.classList.remove('avito-chat-is-hidden');
+          if (isHiddenClass) linkEl.classList.remove('avito-chat-is-hidden');
           visibleCount++;
         }
       }
